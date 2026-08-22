@@ -4,6 +4,38 @@
 > aprobado (ya lo está). Cubre los 8 flujos web, los 2 flujos móviles de
 > vinculación por código, y las pruebas de la lógica más delicada.
 
+## Actualización 8 — fix de runtime en 3/22 pruebas (dos proveedores de EF registrados a la vez)
+
+Ya no era error de compilación — las 22 pruebas corrían, pero 3 fallaban en
+runtime con `InvalidOperationException: Only a single database provider can
+be registered`. Aplicado tu diagnóstico y corrección exacta en
+`CustomWebApplicationFactory.cs`: `RemoveAll<DbContextOptions<WellSenseDbContext>>()`
+solo quita el registro de *opciones*, no los servicios internos que Npgsql
+ya había agregado al contenedor de la app (vía `TryAddEnumerable` dentro de
+`AddInfrastructure`/Program.cs) antes de que `ConfigureTestServices`
+corriera. Al agregar InMemory sobre el mismo contenedor, EF veía dos
+proveedores simultáneos y fallaba.
+
+Cambio aplicado: darle a InMemory su propio `ServiceProvider` interno vía
+`UseInternalServiceProvider(new ServiceCollection().AddEntityFrameworkInMemoryDatabase().BuildServiceProvider())`,
+aislado del contenedor de la app — así los servicios internos de Npgsql y
+los de InMemory nunca conviven en el mismo container.
+
+Confirmo también tu lectura de la tercera prueba
+(`Protected_endpoint_with_tampered_jwt_returns_401`): no era un cuarto bug —
+al fallar `/register` con 500, el email nunca llegaba a
+`CapturedEmails.VerificationTokens`, y el `KeyNotFoundException` de esa
+prueba era downstream del mismo problema. No toqué esa prueba ni
+`AuthFlowEndpointTests.cs`/`RateLimitingEndpointTests.cs` — el fix fue
+enteramente en `CustomWebApplicationFactory.cs`.
+
+No agregué ningún `using` nuevo: `ServiceCollection` viene de
+`Microsoft.Extensions.DependencyInjection` (ya importado),
+`AddEntityFrameworkInMemoryDatabase`/`UseInternalServiceProvider` viven en
+`Microsoft.EntityFrameworkCore` (ya importado).
+
+---
+
 ## Actualización 7 — fix de CS1061 (`ConfigureTestServices` sin `using Microsoft.AspNetCore.TestHost;`)
 
 Confirmado y agregado: un solo `using Microsoft.AspNetCore.TestHost;` en

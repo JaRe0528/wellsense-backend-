@@ -48,10 +48,25 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 
         builder.ConfigureTestServices(services =>
         {
-            // Descarta el registro real de Npgsql y lo reemplaza por InMemory —
-            // ver justificación en el comentario de la clase.
+            // Descarta el registro real de Npgsql y lo reemplaza por InMemory. No basta
+            // con quitar DbContextOptions<WellSenseDbContext> — Npgsql ya había agregado
+            // sus propios servicios internos (IDatabaseProvider, etc.) al contenedor de
+            // la app vía TryAddEnumerable en Program.cs/AddInfrastructure, y esos NO se
+            // remueven con RemoveAll<DbContextOptions<...>>(). Si InMemory usa el mismo
+            // contenedor, EF ve dos proveedores registrados a la vez y lanza
+            // InvalidOperationException ("Only a single database provider can be
+            // registered"). La solución es darle a InMemory su PROPIO ServiceProvider
+            // interno (UseInternalServiceProvider), aislado del de la app, para que no
+            // se mezcle con lo que Npgsql ya registró.
             services.RemoveAll<DbContextOptions<WellSenseDbContext>>();
-            services.AddDbContext<WellSenseDbContext>(options => options.UseInMemoryDatabase(DbName));
+            services.AddDbContext<WellSenseDbContext>(options =>
+            {
+                options.UseInMemoryDatabase(DbName);
+                options.UseInternalServiceProvider(
+                    new ServiceCollection()
+                        .AddEntityFrameworkInMemoryDatabase()
+                        .BuildServiceProvider());
+            });
 
             // Reemplaza el envío de email por un espía para poder leer el token de
             // verificación/reset en las pruebas (el flujo real solo lo loguea).
