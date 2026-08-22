@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS ml_predictions CASCADE;
+DROP TABLE IF EXISTS stress_scores CASCADE;
+DROP TABLE IF EXISTS wellness_scores CASCADE;

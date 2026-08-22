@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS measurements_2026_08;
+DROP TABLE IF EXISTS measurements CASCADE;

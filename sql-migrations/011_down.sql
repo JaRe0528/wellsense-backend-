@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS reminders CASCADE;
+DROP TABLE IF EXISTS notifications CASCADE;
+DROP TABLE IF EXISTS notification_tokens CASCADE;

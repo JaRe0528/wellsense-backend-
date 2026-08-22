@@ -1,0 +1,40 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using WellSense.Application.Common.Interfaces;
+using WellSense.Domain.Billing;
+using WellSense.Domain.Devices;
+using WellSense.Domain.Identity;
+
+namespace WellSense.Tests.TestHelpers;
+
+/// <summary>
+/// Decorador de IWellSenseDbContext que lanza una DbUpdateException simulada en las
+/// primeras N llamadas a SaveChangesAsync, y delega a la instancia real (InMemory) en
+/// las siguientes. Permite probar el bucle de reintento de colisión de
+/// GenerateDeviceLinkCodeCommandHandler sin depender de un índice único real de Postgres
+/// (que el proveedor InMemory de EF no aplica para índices parciales).
+/// </summary>
+public class ThrowingDbContextDecorator(WellSenseDbContext inner, int failFirstNCalls) : IWellSenseDbContext
+{
+    private int _calls;
+
+    public DbSet<User> Users => inner.Users;
+    public DbSet<RefreshToken> RefreshTokens => inner.RefreshTokens;
+    public DbSet<EmailVerificationToken> EmailVerificationTokens => inner.EmailVerificationTokens;
+    public DbSet<PasswordResetToken> PasswordResetTokens => inner.PasswordResetTokens;
+    public DbSet<AuditLog> AuditLogs => inner.AuditLogs;
+    public DbSet<Device> Devices => inner.Devices;
+    public DbSet<DeviceLinkCode> DeviceLinkCodes => inner.DeviceLinkCodes;
+
+    public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        _calls++;
+        if (_calls <= failFirstNCalls)
+        {
+            throw new DbUpdateException("simulated unique violation", new InvalidOperationException("simulated"));
+        }
+        return inner.SaveChangesAsync(cancellationToken);
+    }
+
+    public EntityEntry<TEntity> Entry<TEntity>(TEntity entity) where TEntity : class => inner.Entry(entity);
+}

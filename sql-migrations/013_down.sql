@@ -1,0 +1,3 @@
+DROP MATERIALIZED VIEW IF EXISTS user_monthly_summary;
+DROP MATERIALIZED VIEW IF EXISTS user_weekly_summary;
+DROP MATERIALIZED VIEW IF EXISTS user_daily_summary;

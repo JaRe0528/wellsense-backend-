@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS activity_sessions CASCADE;
+DROP TABLE IF EXISTS sleep_sessions CASCADE;

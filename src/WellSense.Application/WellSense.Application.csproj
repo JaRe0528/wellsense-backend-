@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>WellSense.Application</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="FluentValidation" Version="11.9.2" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.9.2" />
+    <PackageReference Include="MediatR" Version="12.4.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
+    <!-- ILogger<T> (usado en GenerateDeviceLinkCodeCommandHandler y
+         RefreshTokenCommandHandler) vive en este paquete — faltaba, agregado en el
+         barrido completo de usings-vs-paquetes pedido tras el error de IConfiguration. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
+    <!-- IConfiguration crudo (Jwt:AccessTokenMinutes/RefreshTokenDays) se usa hoy
+         directo en LoginCommandHandler/RefreshTokenCommandHandler/
+         RedeemDeviceLinkCodeCommandHandler — de ahí este paquete. Pendiente señalado:
+         envolverlo en una interfaz propia (ej. IAuthTokenSettings) definida aquí e
+         implementada en Infrastructure, para no acoplar Application al detalle de
+         infraestructura de "de dónde viene la configuración". No es bloqueante para
+         este bloque, queda anotado en el HANDOFF como mejora futura. -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.0" />
+    <!-- GetValue<T>(...) (usado para Jwt:AccessTokenMinutes/RefreshTokenDays) es un
+         método de extensión de ConfigurationBinder, que vive en un paquete NuGet
+         DISTINTO de Abstractions — sin este, IConfiguration resolvería pero
+         .GetValue<int>(...) seguiría sin compilar (CS1061). -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.0" />
+    <!-- Solo el paquete "abstractions" de EF Core (DbSet<T>, EntityEntry<T>) para que
+         IWellSenseDbContext pueda declarar su forma sin arrastrar Npgsql/EF.Design —
+         esos siguen viviendo exclusivamente en WellSense.Infrastructure. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\WellSense.Domain\WellSense.Domain.csproj" />
+  </ItemGroup>
+</Project>

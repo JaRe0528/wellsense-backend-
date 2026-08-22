@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS experiments CASCADE;
+DROP TABLE IF EXISTS breathing_sessions CASCADE;
+DROP TABLE IF EXISTS self_reports CASCADE;
