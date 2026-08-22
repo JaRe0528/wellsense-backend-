@@ -4,6 +4,62 @@
 > aprobado (ya lo está). Cubre los 8 flujos web, los 2 flujos móviles de
 > vinculación por código, y las pruebas de la lógica más delicada.
 
+## Actualización 9 — fix de runtime en 3/22 pruebas (el store de InMemory se recreaba vacío en cada request)
+
+Después de la Actualización 8, `dotnet build` compilaba limpio pero `dotnet
+test` seguía fallando en 3 de las 22, todas dentro de
+`AuthFlowEndpointTests`:
+
+- `Full_web_flow_register_verify_login_and_call_protected_endpoint`:
+  `/verify-email` devolvía 400 (`INVALID_OR_EXPIRED_TOKEN`) en vez de 204,
+  con un token recién emitido por `/register` en el mismo test.
+- `Login_with_unverified_email_returns_403_with_error_code`: `/login`
+  devolvía 401 (`INVALID_CREDENTIALS`) en vez de 403
+  (`EMAIL_NOT_VERIFIED`), para un usuario que sí acababa de registrarse.
+- `Protected_endpoint_with_tampered_jwt_returns_401`: `NullReferenceException`
+  al leer `tokens!.AccessToken` — el login previo del propio test ya venía
+  devolviendo un error en vez de tokens, por la misma causa que el punto
+  anterior.
+
+Los tres logs de servidor confirmaban que SÍ se estaba lanzando
+`AuthDomainException` real (`INVALID_OR_EXPIRED_TOKEN` /
+`INVALID_CREDENTIALS`), no un fallo de deserialización — es decir, cada
+handler efectivamente no encontraba en la BD lo que el request anterior,
+en el mismo test, acababa de insertar.
+
+**Causa raíz**: en `CustomWebApplicationFactory.cs`, el
+`ServiceProvider` interno de InMemory (`new
+ServiceCollection().AddEntityFrameworkInMemoryDatabase().BuildServiceProvider()`)
+se construía **dentro** del callback `options => { ... }` pasado a
+`AddDbContext<WellSenseDbContext>`. `AddDbContext` registra
+`DbContextOptions<TContext>` con lifetime **Scoped** por default — y
+ASP.NET Core abre un scope de DI nuevo en cada request HTTP. Eso significa
+que ese callback se re-ejecutaba en cada request, armando cada vez un
+`ServiceProvider` interno nuevo y por lo tanto un store de InMemory nuevo y
+vacío. El nombre de la base (`DbName`) era el mismo string en todos los
+requests, pero el *cache* de stores donde EF busca ese nombre vivía dentro
+de un `ServiceProvider` distinto cada vez, así que nunca lo encontraba —
+efectivamente cada request hablaba con una "base de datos" en memoria
+propia y vacía. Por eso pasaban pruebas de un solo request
+(`Protected_endpoint_without_bearer_token_returns_401`, que ni toca la BD)
+y fallaban las que encadenan varios requests que dependen de datos del
+anterior (register → verify-email → login).
+
+**Fix aplicado**: mover la construcción del `ServiceProvider` interno
+*afuera* del callback de `AddDbContext`, a una variable local capturada por
+el closure — así se construye una sola vez (cuando `ConfigureTestServices`
+corre, una sola vez por instancia de factory) y todos los `DbContext` de
+todos los requests, en todos los scopes, comparten el mismo store. No se
+tocó nada más del archivo (`DbName`, el reemplazo de `IEmailSender`, la
+config mínima de `Jwt:Secret`/`DeviceLink:Pepper`/`ConnectionStrings` siguen
+igual).
+
+No toqué `AuthFlowEndpointTests.cs`, `RateLimitingEndpointTests.cs` ni
+`CapturingEmailSender.cs` — el fix fue enteramente en
+`CustomWebApplicationFactory.cs`, igual que en la Actualización 8.
+
+---
+
 ## Actualización 8 — fix de runtime en 3/22 pruebas (dos proveedores de EF registrados a la vez)
 
 Ya no era error de compilación — las 22 pruebas corrían, pero 3 fallaban en

@@ -58,14 +58,29 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
             // registered"). La solución es darle a InMemory su PROPIO ServiceProvider
             // interno (UseInternalServiceProvider), aislado del de la app, para que no
             // se mezcle con lo que Npgsql ya registró.
+            //
+            // IMPORTANTE: ese ServiceProvider interno se construye UNA SOLA VEZ aquí
+            // afuera, no dentro del callback de `options =>`. `AddDbContext` registra
+            // `DbContextOptions<TContext>` con lifetime Scoped por default, así que ese
+            // callback se re-ejecuta en CADA scope, es decir, en CADA request HTTP. Si
+            // `new ServiceCollection().AddEntityFrameworkInMemoryDatabase().BuildServiceProvider()`
+            // vivía adentro del callback, cada request armaba su propio ServiceProvider
+            // interno nuevo y por lo tanto su propio store de InMemory vacío — mismo
+            // `DbName`, pero un cache de store distinto que nunca lo había visto. Efecto
+            // observado: los datos de un request (ej. `/register`) desaparecían en el
+            // siguiente (`/verify-email`, `/login`), porque cada uno corría contra una
+            // "base de datos" en memoria distinta y vacía. Capturando el ServiceProvider
+            // en una variable ANTES de pasarlo a `AddDbContext`, el closure reutiliza la
+            // misma instancia (y por lo tanto el mismo store) en cada scope/request.
+            var inMemoryServiceProvider = new ServiceCollection()
+                .AddEntityFrameworkInMemoryDatabase()
+                .BuildServiceProvider();
+
             services.RemoveAll<DbContextOptions<WellSenseDbContext>>();
             services.AddDbContext<WellSenseDbContext>(options =>
             {
                 options.UseInMemoryDatabase(DbName);
-                options.UseInternalServiceProvider(
-                    new ServiceCollection()
-                        .AddEntityFrameworkInMemoryDatabase()
-                        .BuildServiceProvider());
+                options.UseInternalServiceProvider(inMemoryServiceProvider);
             });
 
             // Reemplaza el envío de email por un espía para poder leer el token de
