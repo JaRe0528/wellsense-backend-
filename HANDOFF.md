@@ -4,6 +4,29 @@
 > aprobado (ya lo está). Cubre los 8 flujos web, los 2 flujos móviles de
 > vinculación por código, y las pruebas de la lógica más delicada.
 
+## Actualización 7 — fix de CS1061 (`ConfigureTestServices` sin `using Microsoft.AspNetCore.TestHost;`)
+
+Confirmado y agregado: un solo `using Microsoft.AspNetCore.TestHost;` en
+`CustomWebApplicationFactory.cs` — ese método de extensión vive ahí, no en
+`Microsoft.AspNetCore.Hosting` (que solo trae los métodos base de
+`IWebHostBuilder` declarados en la propia interfaz, como
+`ConfigureAppConfiguration`). Sin paquete nuevo, tal como diagnosticaste —
+`Microsoft.AspNetCore.TestHost` ya llega transitivo vía
+`Microsoft.AspNetCore.Mvc.Testing`.
+
+Repasé el resto del archivo llamada por llamada contra el mismo criterio
+(¿en qué namespace vive el método de extensión, no solo el paquete?) para no
+dejar otra de estas: `ConfigureAppConfiguration` (miembro de la propia
+interfaz `IWebHostBuilder`, no extensión — `Microsoft.AspNetCore.Hosting`),
+`AddInMemoryCollection` (`Microsoft.Extensions.Configuration`), `RemoveAll<T>`
+(`Microsoft.Extensions.DependencyInjection.Extensions`), `AddDbContext`/
+`UseInMemoryDatabase` (`Microsoft.EntityFrameworkCore`), `AddSingleton`
+(`Microsoft.Extensions.DependencyInjection`) — los 9 `using` del archivo ya
+cubren los 5 namespaces distintos de donde salen todas las llamadas de este
+archivo.
+
+---
+
 ## Actualización 6 — fix de CS0246 en Tests (`using` de Infrastructure faltante) + auditoría automatizada de tipos-vs-usings
 
 Confirmado tu diagnóstico: a `ThrowingDbContextDecorator.cs` le faltaba
