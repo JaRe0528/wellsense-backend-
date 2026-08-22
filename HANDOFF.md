@@ -4,6 +4,37 @@
 > aprobado (ya lo está). Cubre los 8 flujos web, los 2 flujos móviles de
 > vinculación por código, y las pruebas de la lógica más delicada.
 
+## Actualización 6 — fix de CS0246 en Tests (`using` de Infrastructure faltante) + auditoría automatizada de tipos-vs-usings
+
+Confirmado tu diagnóstico: a `ThrowingDbContextDecorator.cs` le faltaba
+`using WellSense.Infrastructure.Persistence;` — agregado, un solo `using`, sin
+tocar nada más del archivo.
+
+Con Domain/Application/Infrastructure/Api ya compilando limpio de tu lado,
+antes de mandarte este ZIP hice algo más sistemático que revisar a ojo:
+escribí un script que (1) recorre todo `src/` y `tests/`, extrae cada
+declaración `class`/`record`/`interface`/`enum`/`struct` y el namespace del
+archivo que la contiene, armando un mapa tipo→namespace de TODO el
+repositorio; (2) para cada archivo de `tests/`, extrae cada identificador
+que empiece en mayúscula, lo cruza contra ese mapa, y marca como sospechoso
+cualquiera cuyo namespace no esté en los `using` del archivo (ni sea el
+namespace propio del archivo, ni tenga una referencia calificada completa
+cerca). Sobre `tests/` completo, el único resultado fue un falso positivo
+(el nombre `GenerateDeviceLinkCodeCommandHandler` mencionado en un
+comentario de documentación de `ThrowingDbContextDecorator.cs`, no una
+referencia real de tipo) — cero problemas reales adicionales a los que ya
+habías encontrado tú compilando. Corrí el mismo script sobre `src/` también:
+salieron varios más, todos igual de falsos positivos (nombres de propiedad
+que coinciden por texto con nombres de clase — ej. la propiedad
+`RefreshToken` de `RefreshRequest`, o menciones en comentarios/strings de
+migraciones), consistente con que esos 4 proyectos ya te compilan limpio.
+
+Con esto, y salvo lo que la compilación real siga encontrando, no me quedan
+más candidatos obvios de este mismo patrón ("using faltante para un tipo que
+sí se usa") en ningún archivo del repo.
+
+---
+
 ## Actualización 5 — fix de CS1503 (method group pasado donde `HasConversion` pedía `Expression<Func<>>`)
 
 Confirmado, sí revisé los 3 casos (no solo el primero) y sí barrí todo el

@@ -4,6 +4,7 @@ using WellSense.Application.Common.Interfaces;
 using WellSense.Domain.Billing;
 using WellSense.Domain.Devices;
 using WellSense.Domain.Identity;
+using WellSense.Infrastructure.Persistence;
 
 namespace WellSense.Tests.TestHelpers;
 
