@@ -4,6 +4,41 @@
 > aprobado (ya lo está). Cubre los 8 flujos web, los 2 flujos móviles de
 > vinculación por código, y las pruebas de la lógica más delicada.
 
+## Actualización 5 — fix de CS1503 (method group pasado donde `HasConversion` pedía `Expression<Func<>>`)
+
+Confirmado, sí revisé los 3 casos (no solo el primero) y sí barrí todo el
+árbol antes de mandar esto — dos pasadas distintas:
+
+1. `grep -rn "HasConversion"` sobre `src` y `tests` completos → 13
+   resultados en total. Los repasé uno por uno: 6 son `HasConversion<string>()`
+   (el overload genérico, sin este problema porque no recibe argumentos),
+   1 es `MembershipPlanConfiguration.Code` que ya usaba lambdas inline
+   (`v => v.ToString()...`, `v => (PlanCode)Enum.Parse(...)`) — nunca tuvo el
+   bug, y los 3 que sí fallaban son exactamente los que reportaste.
+2. Un segundo filtro con regex específicamente para la forma del bug
+   (`HasConversion(Identificador, Identificador)` sin `=>` de por medio) sobre
+   todo el árbol — cero resultados después del fix, cero resultados
+   adicionales antes del fix aparte de los 3 ya conocidos.
+
+Corrección aplicada exactamente como la diste, en los 3 archivos:
+
+```csharp
+// IdentityConfigurations.cs (UserStatus)
+b.Property(x => x.Status).HasConversion(v => StatusToDb(v), v => StatusFromDb(v));
+
+// DeviceConfigurations.cs (DeviceStatus)
+b.Property(x => x.Status).HasConversion(v => StatusToDb(v), v => StatusFromDb(v));
+
+// ProfileConfigurations.cs (DeclaredStressLevel)
+b.Property(x => x.DeclaredStressLevel).HasConversion(v => StressLevelToDb(v), v => StressLevelFromDb(v));
+```
+
+Los métodos estáticos (`StatusToDb`/`StatusFromDb`/`StressLevelToDb`/
+`StressLevelFromDb`) no se tocaron — seguían bien, el problema era solo cómo
+se les llamaba desde `HasConversion`.
+
+---
+
 ## Actualización 4 — barrido completo de usings-vs-paquetes (los 4 `.csproj`)
 
 Pediste no seguir arreglando uno por uno — hice el barrido completo:

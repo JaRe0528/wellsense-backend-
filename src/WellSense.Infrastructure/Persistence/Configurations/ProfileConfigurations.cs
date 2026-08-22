@@ -34,7 +34,7 @@ public class OnboardingSurveyConfiguration : IEntityTypeConfiguration<Onboarding
         b.HasKey(x => x.Id);
         b.HasIndex(x => x.ProfileId).IsUnique();
         b.HasOne<Profile>().WithOne().HasForeignKey<OnboardingSurvey>(x => x.ProfileId);
-        b.Property(x => x.DeclaredStressLevel).HasConversion(StressLevelToDb, StressLevelFromDb);
+        b.Property(x => x.DeclaredStressLevel).HasConversion(v => StressLevelToDb(v), v => StressLevelFromDb(v));
     }
 
     // Ver el mismo comentario en IdentityConfigurations.UserConfiguration: extraer el

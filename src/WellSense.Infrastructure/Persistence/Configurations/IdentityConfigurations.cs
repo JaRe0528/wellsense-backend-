@@ -13,7 +13,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         b.Property(x => x.Role).HasConversion(
             v => v == UserRole.Admin ? "admin" : "user",
             v => v == "admin" ? UserRole.Admin : UserRole.User);
-        b.Property(x => x.Status).HasConversion(StatusToDb, StatusFromDb);
+        b.Property(x => x.Status).HasConversion(v => StatusToDb(v), v => StatusFromDb(v));
         // el índice único ux_users_email_lower (lower(email) WHERE is_deleted = false)
         // es a nivel de motor y se crea en la migración 001; EF no necesita modelarlo
         // para poder consultar, solo para no intentar recrearlo si algún día se usa

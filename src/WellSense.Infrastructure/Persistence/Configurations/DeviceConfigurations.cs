@@ -15,7 +15,7 @@ public class DeviceConfiguration : IEntityTypeConfiguration<Device>
         b.Property(x => x.Type).HasConversion(
             v => v == DeviceType.Phone ? "PHONE" : "WATCH",
             v => v == "PHONE" ? DeviceType.Phone : DeviceType.Watch);
-        b.Property(x => x.Status).HasConversion(StatusToDb, StatusFromDb);
+        b.Property(x => x.Status).HasConversion(v => StatusToDb(v), v => StatusFromDb(v));
     }
 
     // Ver el mismo comentario en IdentityConfigurations.UserConfiguration: extraer el
