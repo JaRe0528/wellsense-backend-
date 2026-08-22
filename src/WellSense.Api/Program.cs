@@ -59,11 +59,22 @@ builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 
 // ---------- JWT Bearer ----------
-var jwtSecret = builder.Configuration["Jwt:Secret"]
-    ?? throw new InvalidOperationException(
-        "Falta Jwt:Secret. En desarrollo: `dotnet user-secrets set \"Jwt:Secret\" \"...\"`. " +
-        "En producción viene de Vault/Key Vault — nunca de appsettings.json versionado.");
-
+// IMPORTANTE: `Jwt:Secret` (y el resto de los valores de este bloque) se leen desde
+// `builder.Configuration` DENTRO del callback de `AddJwtBearer`, no en una variable
+// local capturada aquí arriba antes de `builder.Build()`. Motivo: `WebApplicationFactory`
+// (usado en las pruebas de integración HTTP) aplica sus overrides de configuración
+// (`ConfigureAppConfiguration`, ej. un `Jwt:Secret` de prueba) recién al reconstruir el
+// host, es decir, DESPUÉS de que el código de nivel superior de este archivo ya corrió.
+// Si se lee `Jwt:Secret` en una variable local aquí, esa lectura captura el valor real
+// de `appsettings.json` (el placeholder `__SET_VIA_USER_SECRETS_OR_VAULT__...`) en vez
+// del override de prueba, mientras que `JwtTokenService` (que FIRMA los tokens) lee
+// `Jwt:Secret` vía `IConfiguration` inyectado en tiempo de request, viendo sí la
+// configuración final ya fusionada con el override. Resultado observado: el token se
+// firma con la clave de prueba pero se valida contra la clave del placeholder → firma
+// "inválida" → 401 en cualquier endpoint protegido, incluso con un token legítimo.
+// Leyendo todo esto dentro del callback (que ASP.NET Core invoca de forma perezosa,
+// bien después de `Build()`) se evita el problema — mismo patrón que ya usa
+// `DeviceLinkCodeHasher` con `DeviceLink:Pepper` vía `IConfiguration` inyectado.
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -72,6 +83,12 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         // MapInboundClaims=false, CurrentUserService puede leer los claims tal como
         // los emitió JwtTokenService (JwtRegisteredClaimNames.Sub, .Email).
         options.MapInboundClaims = false;
+
+        var jwtSecret = builder.Configuration["Jwt:Secret"]
+            ?? throw new InvalidOperationException(
+                "Falta Jwt:Secret. En desarrollo: `dotnet user-secrets set \"Jwt:Secret\" \"...\"`. " +
+                "En producción viene de Vault/Key Vault — nunca de appsettings.json versionado.");
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,

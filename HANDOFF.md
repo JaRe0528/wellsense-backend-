@@ -4,6 +4,58 @@
 > aprobado (ya lo está). Cubre los 8 flujos web, los 2 flujos móviles de
 > vinculación por código, y las pruebas de la lógica más delicada.
 
+## Actualización 10 — fix de runtime en 1/22 pruebas (Jwt:Secret leído antes de que aplicaran los overrides de config de la prueba)
+
+Con la Actualización 9 aplicada, `dotnet test` pasó de 3 fallos a 1:
+`Full_web_flow_register_verify_login_and_call_protected_endpoint` — register,
+verify-email y login ya funcionaban (tokens reales emitidos), pero la
+llamada final a `/change-password` con ese access token devolvía 401 en vez
+de 204. El log del servidor no mostraba ningún `AuthDomainException` en ese
+401 — es decir, el fallo era del middleware de JWT bearer en sí, antes de
+llegar al handler.
+
+**Causa raíz**: en `Program.cs`, `Jwt:Secret` se leía en una variable local
+(`var jwtSecret = builder.Configuration["Jwt:Secret"] ?? throw ...`) **antes**
+de `builder.Build()`. `WebApplicationFactory` aplica los overrides de
+configuración de `CustomWebApplicationFactory` (`ConfigureAppConfiguration`,
+que pisa `Jwt:Secret` con un valor de prueba) recién al reconstruir el host
+internamente — es decir, después de que ese código de nivel superior de
+`Program.cs` ya había corrido y ya había capturado su valor. Esa lectura
+temprana obtenía entonces el valor real de `appsettings.json` — el
+placeholder `"__SET_VIA_USER_SECRETS_OR_VAULT__..."`, un string no nulo (por
+eso no disparaba el `?? throw`, solo quedaba mal) — y con ESE valor se
+armaba la `IssuerSigningKey` que el middleware usa para **validar** tokens
+entrantes.
+
+Mientras tanto, `JwtTokenService` (el que **firma** los tokens en
+`/login`) lee `Jwt:Secret` vía `IConfiguration` inyectado por DI en tiempo
+de request — esa lectura sí ve la configuración final, ya fusionada con el
+override de la prueba. Resultado: el access token se firmaba con la clave
+de prueba pero se validaba contra una clave derivada del placeholder →
+firma "inválida" para el middleware → 401 en cualquier endpoint protegido,
+aun con un token legítimo recién emitido por el propio `/login`.
+
+Como referencia de que el patrón correcto ya existía en el propio repo:
+`DeviceLinkCodeHasher` lee `DeviceLink:Pepper` de la misma forma (vía
+`IConfiguration` inyectado, en el método que lo usa, no en una variable
+capturada en `Program.cs`) y por eso nunca tuvo este problema — el bug era
+específico de cómo estaba armado el bloque de `AddJwtBearer`.
+
+**Fix aplicado**: mover la lectura de `Jwt:Secret` (y el resto de los
+valores usados en `TokenValidationParameters`) **adentro** del callback de
+`AddJwtBearer(options => { ... })`. Ese callback lo invoca ASP.NET Core de
+forma perezosa (la primera vez que se necesitan las opciones, bien después
+de que `Build()` terminó y los overrides de configuración de la prueba ya
+se fusionaron), así que ahora lee el mismo `Jwt:Secret` que efectivamente
+usa `JwtTokenService` para firmar. No cambia nada del comportamiento en
+producción (ahí no hay overrides de configuración de por medio; el valor
+leído es el mismo en cualquier punto del arranque).
+
+No toqué `JwtTokenService.cs`, `CustomWebApplicationFactory.cs` ni ningún
+archivo de `tests/` para este fix — fue enteramente en `Program.cs`.
+
+---
+
 ## Actualización 9 — fix de runtime en 3/22 pruebas (el store de InMemory se recreaba vacío en cada request)
 
 Después de la Actualización 8, `dotnet build` compilaba limpio pero `dotnet
