@@ -22,6 +22,36 @@ public class SyncMeasurementsCommandHandlerTests
         return device;
     }
 
+    /// <summary>Espía simple: registra cada evento publicado sin necesitar NSubstitute — solo lo que esta prueba necesita verificar.</summary>
+    private class SpyPublisher : MediatR.IPublisher
+    {
+        public List<object> Published { get; } = [];
+        public Task Publish(object notification, CancellationToken ct = default) { Published.Add(notification); return Task.CompletedTask; }
+        public Task Publish<TNotification>(TNotification notification, CancellationToken ct = default) where TNotification : MediatR.INotification
+        { Published.Add(notification!); return Task.CompletedTask; }
+    }
+
+    [Fact]
+    public async Task Publishes_dashboard_event_only_when_new_measurements_were_actually_accepted()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var clock = new FixedClock(DateTimeOffset.UtcNow);
+        var userId = Guid.NewGuid();
+        var device = SeedActiveDevice(db, userId, clock);
+        var spy = new SpyPublisher();
+        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock, spy);
+
+        // Batch 1: una medición válida — SÍ debe publicar.
+        await handler.Handle(new SyncMeasurementsCommand(
+            userId, device.Id, "req-publish-1", [new MeasurementItem(Guid.NewGuid(), "STEPS", 100, "steps", clock.UtcNow)]), default);
+        spy.Published.Should().ContainSingle().Which.Should().BeOfType<WellSense.Application.Notifications.Events.MeasurementsSyncedEvent>();
+
+        // Batch 2: solo un tipo inválido (0 aceptadas) — NO debe publicar de nuevo.
+        await handler.Handle(new SyncMeasurementsCommand(
+            userId, device.Id, "req-publish-2", [new MeasurementItem(Guid.NewGuid(), "NOT_REAL", 1, "x", clock.UtcNow)]), default);
+        spy.Published.Should().HaveCount(1); // sigue en 1, no se agregó un segundo evento
+    }
+
     [Fact]
     public async Task First_sync_accepts_all_valid_measurements()
     {
@@ -29,7 +59,7 @@ public class SyncMeasurementsCommandHandlerTests
         var clock = new FixedClock(DateTimeOffset.UtcNow);
         var userId = Guid.NewGuid();
         var device = SeedActiveDevice(db, userId, clock);
-        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock);
+        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock, new NoOpPublisher());
 
         var items = new List<MeasurementItem>
         {
@@ -53,7 +83,7 @@ public class SyncMeasurementsCommandHandlerTests
         var clock = new FixedClock(DateTimeOffset.UtcNow);
         var userId = Guid.NewGuid();
         var device = SeedActiveDevice(db, userId, clock);
-        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock);
+        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock, new NoOpPublisher());
 
         var items = new List<MeasurementItem> { new(Guid.NewGuid(), "HEART_RATE", 72, "bpm", clock.UtcNow.AddMinutes(-10)) };
         var command = new SyncMeasurementsCommand(userId, device.Id, "same-batch-id", items);
@@ -74,7 +104,7 @@ public class SyncMeasurementsCommandHandlerTests
         var clock = new FixedClock(DateTimeOffset.UtcNow);
         var userId = Guid.NewGuid();
         var device = SeedActiveDevice(db, userId, clock);
-        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock);
+        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock, new NoOpPublisher());
 
         var eventId = Guid.NewGuid();
         var recordedAt = clock.UtcNow.AddMinutes(-10);
@@ -100,7 +130,7 @@ public class SyncMeasurementsCommandHandlerTests
         var clock = new FixedClock(DateTimeOffset.UtcNow);
         var userId = Guid.NewGuid();
         var device = SeedActiveDevice(db, userId, clock);
-        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock);
+        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock, new NoOpPublisher());
 
         var items = new List<MeasurementItem>
         {
@@ -122,7 +152,7 @@ public class SyncMeasurementsCommandHandlerTests
         var clock = new FixedClock(DateTimeOffset.UtcNow);
         var userId = Guid.NewGuid();
         var device = SeedActiveDevice(db, userId, clock);
-        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock);
+        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock, new NoOpPublisher());
 
         var items = new List<MeasurementItem>
         {
@@ -142,7 +172,7 @@ public class SyncMeasurementsCommandHandlerTests
         var owner = Guid.NewGuid();
         var attacker = Guid.NewGuid();
         var device = SeedActiveDevice(db, owner, clock);
-        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock);
+        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock, new NoOpPublisher());
 
         var act = () => handler.Handle(new SyncMeasurementsCommand(
             attacker, device.Id, "req-4", [new MeasurementItem(Guid.NewGuid(), "STEPS", 1, "steps", clock.UtcNow)]), default);
@@ -159,7 +189,7 @@ public class SyncMeasurementsCommandHandlerTests
         var device = SeedActiveDevice(db, userId, clock);
         device.Status = DeviceStatus.Unpaired;
         await db.SaveChangesAsync();
-        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock);
+        var handler = new SyncMeasurementsCommandHandler(db, new ControllableViolationDetector(alwaysReturn: false), clock, new NoOpPublisher());
 
         var act = () => handler.Handle(new SyncMeasurementsCommand(
             userId, device.Id, "req-5", [new MeasurementItem(Guid.NewGuid(), "STEPS", 1, "steps", clock.UtcNow)]), default);
@@ -206,7 +236,7 @@ public class SyncMeasurementsCommandHandlerTests
             otherProcessDb.SaveChanges();
         });
 
-        var handler = new SyncMeasurementsCommandHandler(throwingDb, new ControllableViolationDetector(alwaysReturn: true), clock);
+        var handler = new SyncMeasurementsCommandHandler(throwingDb, new ControllableViolationDetector(alwaysReturn: true), clock, new NoOpPublisher());
 
         var result = await handler.Handle(new SyncMeasurementsCommand(
             userId, device.Id, "raced-request", [new MeasurementItem(Guid.NewGuid(), "STEPS", 1, "steps", clock.UtcNow)]), default);
@@ -241,6 +271,8 @@ file class ThrowingDbContextDecoratorWithSideEffect(
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Profiles.OnboardingSurvey> OnboardingSurveys => inner.OnboardingSurveys;
     public Microsoft.EntityFrameworkCore.DbSet<Measurement> Measurements => inner.Measurements;
     public Microsoft.EntityFrameworkCore.DbSet<SyncOperation> SyncOperations => inner.SyncOperations;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Notifications.NotificationToken> NotificationTokens => inner.NotificationTokens;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Notifications.Notification> Notifications => inner.Notifications;
 
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using WellSense.Api.Hubs;
 using WellSense.Api.Middleware;
 using WellSense.Api.Services;
 using WellSense.Application;
@@ -59,6 +60,10 @@ builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 
+// ---------- SignalR (Bloque 5: dashboard en vivo) ----------
+builder.Services.AddSignalR();
+builder.Services.AddScoped<IDashboardNotifier, SignalRDashboardNotifier>();
+
 // ---------- JWT Bearer ----------
 // IMPORTANTE: `Jwt:Secret` (y el resto de los valores de este bloque) se leen desde
 // `builder.Configuration` DENTRO del callback de `AddJwtBearer`, no en una variable
@@ -100,6 +105,25 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
             ClockSkew = TimeSpan.FromSeconds(30)
+        };
+
+        // SignalR (Bloque 5): un WebSocket no puede mandar un header Authorization normal
+        // en el handshake del navegador — el patrón oficial de ASP.NET Core es leer el
+        // JWT de un query string `access_token` en vez del header, PERO solo para
+        // requests al propio hub (nunca para el resto de la Api, donde el header sigue
+        // siendo obligatorio). El chequeo de path acota esto exactamente a esa ruta.
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs/dashboard"))
+                {
+                    context.Token = accessToken;
+                }
+                return Task.CompletedTask;
+            }
         };
     });
 builder.Services.AddAuthorization();
@@ -143,6 +167,7 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapHub<DashboardHub>("/hubs/dashboard");
 
 app.Run();
 

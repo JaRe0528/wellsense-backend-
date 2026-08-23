@@ -30,6 +30,11 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
+    <!-- Bloque 5 (SignalR+FCM): SDK oficial de Firebase Admin para .NET — trae
+         FirebaseAdmin.Messaging (envío real de push) y, transitivamente,
+         Google.Apis.Auth (GoogleCredential para las credenciales de la cuenta de
+         servicio). Ver FirebaseCloudMessagingSender.cs. -->
+    <PackageReference Include="FirebaseAdmin" Version="3.1.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\WellSense.Application\WellSense.Application.csproj" />

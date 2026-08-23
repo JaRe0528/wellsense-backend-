@@ -5,6 +5,7 @@ using WellSense.Domain.Billing;
 using WellSense.Domain.Devices;
 using WellSense.Domain.Identity;
 using WellSense.Domain.Measurements;
+using WellSense.Domain.Notifications;
 using WellSense.Domain.Profiles;
 using WellSense.Infrastructure.Persistence;
 
@@ -33,6 +34,8 @@ public class ThrowingDbContextDecorator(WellSenseDbContext inner, int failFirstN
     public DbSet<OnboardingSurvey> OnboardingSurveys => inner.OnboardingSurveys;
     public DbSet<Measurement> Measurements => inner.Measurements;
     public DbSet<SyncOperation> SyncOperations => inner.SyncOperations;
+    public DbSet<NotificationToken> NotificationTokens => inner.NotificationTokens;
+    public DbSet<Notification> Notifications => inner.Notifications;
 
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {

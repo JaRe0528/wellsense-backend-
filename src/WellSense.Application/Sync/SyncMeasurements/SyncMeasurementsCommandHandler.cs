@@ -2,6 +2,7 @@ using MediatR;
 using Microsoft.EntityFrameworkCore;
 using WellSense.Application.Common.Exceptions;
 using WellSense.Application.Common.Interfaces;
+using WellSense.Application.Notifications.Events;
 using WellSense.Domain.Devices;
 using WellSense.Domain.Measurements;
 
@@ -29,11 +30,18 @@ namespace WellSense.Application.Sync.SyncMeasurements;
 /// `SaveChangesAsync` (una transacción implícita) — si algo falla a medio camino, nada
 /// se compromete, así que no hace falta una máquina de estados PROCESSING→FAILED: o
 /// el batch completo se confirma como COMPLETED, o no se confirma nada en absoluto.
+///
+/// Modificado en Bloque 5 (SignalR+FCM): se agregó `IPublisher publisher` para avisarle
+/// al dashboard en vivo cuando este sync trajo datos nuevos de verdad (ver el final de
+/// `Handle`). La lógica de idempotencia/clasificación de este handler NO se tocó —
+/// solo se agregó la publicación del evento en el único punto de salida donde se
+/// confirmaron datos genuinamente nuevos.
 /// </summary>
 public class SyncMeasurementsCommandHandler(
     IWellSenseDbContext db,
     IUniqueConstraintViolationDetector violationDetector,
-    IDateTimeProvider clock) : IRequestHandler<SyncMeasurementsCommand, SyncMeasurementsResult>
+    IDateTimeProvider clock,
+    IPublisher publisher) : IRequestHandler<SyncMeasurementsCommand, SyncMeasurementsResult>
 {
     private static readonly TimeSpan MaxFutureClockSkew = TimeSpan.FromMinutes(5);
 
@@ -142,7 +150,21 @@ public class SyncMeasurementsCommandHandler(
             return MapToResult(raced, []);
         }
 
+        await PublishDashboardEventIfNeeded(operation, request.CurrentUserId, now, ct);
         return MapToResult(operation, rejected);
+    }
+
+    /// <summary>
+    /// Se llama SOLO en el camino feliz (nunca en el replay idempotente ni en la
+    /// recuperación de carrera) y SOLO si de verdad se aceptó al menos una medición
+    /// nueva — un sync que solo trajo duplicados/rechazados no es información nueva
+    /// para el dashboard, y el replay/carrera ya habrían publicado (o no) este mismo
+    /// evento la primera vez que esos datos se procesaron de verdad.
+    /// </summary>
+    private async Task PublishDashboardEventIfNeeded(SyncOperation operation, Guid userId, DateTimeOffset now, CancellationToken ct)
+    {
+        if (operation.AcceptedCount > 0)
+            await publisher.Publish(new MeasurementsSyncedEvent(userId, operation.AcceptedCount, now), ct);
     }
 
     private static SyncMeasurementsResult MapToResult(SyncOperation op, IReadOnlyList<RejectedItem> rejectedItems)

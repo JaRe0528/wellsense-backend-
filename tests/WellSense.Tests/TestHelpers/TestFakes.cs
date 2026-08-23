@@ -45,3 +45,42 @@ public class ControllableViolationDetector : IUniqueConstraintViolationDetector
     public ControllableViolationDetector(bool alwaysReturn = true) => _alwaysReturn = alwaysReturn;
     public bool IsUniqueViolation(Exception ex, string constraintName) => _alwaysReturn;
 }
+
+/// <summary>
+/// No-op de MediatR.IPublisher para handlers (ej. SyncMeasurementsCommandHandler, desde
+/// Bloque 5) que publican un evento de integración pero cuyo resultado no depende de que
+/// alguien lo escuche — las pruebas de esos handlers no necesitan verificar el push a
+/// SignalR (eso lo cubre MeasurementsSyncedEventHandlerTests por separado), solo que el
+/// propio handler no truene al intentar publicar.
+/// </summary>
+public class NoOpPublisher : MediatR.IPublisher
+{
+    public Task Publish(object notification, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default)
+        where TNotification : MediatR.INotification => Task.CompletedTask;
+}
+
+public record CapturedDashboardNotification(Guid UserId, string EventType, object Payload);
+
+public class SpyDashboardNotifier : IDashboardNotifier
+{
+    public List<CapturedDashboardNotification> Calls { get; } = [];
+
+    public Task NotifyUserAsync(Guid userId, string eventType, object payload, CancellationToken ct = default)
+    {
+        Calls.Add(new CapturedDashboardNotification(userId, eventType, payload));
+        return Task.CompletedTask;
+    }
+}
+
+public class RecordingPushNotificationSender : IPushNotificationSender
+{
+    public List<(string Token, string Title, string Body)> Sent { get; } = [];
+    public bool AlwaysSucceeds { get; set; } = true;
+
+    public Task<bool> TrySendAsync(string fcmToken, string title, string body, CancellationToken ct = default)
+    {
+        Sent.Add((fcmToken, title, body));
+        return Task.FromResult(AlwaysSucceeds);
+    }
+}

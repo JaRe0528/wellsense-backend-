@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using WellSense.Application.Common.Interfaces;
 using WellSense.Infrastructure.Common;
+using WellSense.Infrastructure.Notifications;
 using WellSense.Infrastructure.Persistence;
 using WellSense.Infrastructure.Security;
 
@@ -36,6 +37,7 @@ public static class DependencyInjection
         services.AddSingleton<IDateTimeProvider, DateTimeProvider>();
         services.AddScoped<IUniqueConstraintViolationDetector, UniqueConstraintViolationDetector>();
         services.AddScoped<IEmailSender, LoggingEmailSender>();
+        services.AddScoped<IPushNotificationSender, FirebaseCloudMessagingSender>();
 
         return services;
     }
