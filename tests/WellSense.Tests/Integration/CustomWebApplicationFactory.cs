@@ -6,7 +6,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using WellSense.Application.Common.Interfaces;
+using WellSense.Domain.Billing;
 using WellSense.Infrastructure.Persistence;
+using WellSense.Tests.TestHelpers;
 
 namespace WellSense.Tests.Integration;
 
@@ -29,6 +31,7 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 {
     public readonly string DbName = $"wellsense-e2e-{Guid.NewGuid()}";
     public CapturingEmailSender CapturedEmails { get; } = new();
+    public FakePaymentGateway PaymentGateway { get; } = new();
 
     /// <summary>
     /// Desactivado por defecto: la enorme mayoría de las clases de prueba HTTP (Auth,
@@ -96,10 +99,41 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
                 options.UseInternalServiceProvider(inMemoryServiceProvider);
             });
 
+            // Semilla del catálogo de planes (Bloque 6): la migración 012 real inserta
+            // los 4 planes en Postgres vía el propio DDL, pero un InMemory store nuevo
+            // arranca vacío — sin esto, cualquier prueba de integración que toque
+            // /memberships/* fallaría por no encontrar ningún MembershipPlan. Se siembra
+            // aquí, contra el mismo ServiceProvider/DbName que usará la app (mismo
+            // mecanismo de "varios DbContext comparten un store InMemory por nombre" ya
+            // usado en el Bloque 5 para simular la carrera de sync).
+            using (var seedContext = new WellSenseDbContext(new DbContextOptionsBuilder<WellSenseDbContext>()
+                .UseInMemoryDatabase(DbName)
+                .UseInternalServiceProvider(inMemoryServiceProvider)
+                .Options))
+            {
+                if (!seedContext.MembershipPlans.Any())
+                {
+                    seedContext.MembershipPlans.AddRange(
+                        new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Free, Name = "Free", PriceCents = 0, Currency = "MXN" },
+                        new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Basic, Name = "Basic", PriceCents = 9900, Currency = "MXN" },
+                        new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Pro, Name = "Pro", PriceCents = 19900, Currency = "MXN" },
+                        new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Professional, Name = "Professional", PriceCents = 39900, Currency = "MXN" });
+                    seedContext.SaveChanges();
+                }
+            }
+
             // Reemplaza el envío de email por un espía para poder leer el token de
             // verificación/reset en las pruebas (el flujo real solo lo loguea).
             services.RemoveAll<IEmailSender>();
             services.AddSingleton<IEmailSender>(CapturedEmails);
+
+            // Reemplaza el gateway real de Stripe por uno falso (Bloque 6) — sin esto,
+            // cualquier prueba de integración que intentara cobrar un plan pago recibiría
+            // 503 PAYMENT_GATEWAY_NOT_CONFIGURED (no hay Stripe:SecretKey real en
+            // pruebas, ni debería haberlo). El fake se expone como propiedad pública para
+            // que cada prueba configure si el próximo cobro se aprueba o se rechaza.
+            services.RemoveAll<IPaymentGateway>();
+            services.AddSingleton<IPaymentGateway>(PaymentGateway);
         });
     }
 }

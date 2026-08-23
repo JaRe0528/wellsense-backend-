@@ -36,6 +36,9 @@ public class ThrowingDbContextDecorator(WellSenseDbContext inner, int failFirstN
     public DbSet<SyncOperation> SyncOperations => inner.SyncOperations;
     public DbSet<NotificationToken> NotificationTokens => inner.NotificationTokens;
     public DbSet<Notification> Notifications => inner.Notifications;
+    public DbSet<MembershipPlan> MembershipPlans => inner.MembershipPlans;
+    public DbSet<Subscription> Subscriptions => inner.Subscriptions;
+    public DbSet<Payment> Payments => inner.Payments;
 
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {

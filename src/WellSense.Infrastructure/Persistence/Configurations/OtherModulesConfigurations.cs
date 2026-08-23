@@ -209,7 +209,17 @@ public class SubscriptionConfiguration : IEntityTypeConfiguration<Subscription>
     {
         b.ToTable("subscriptions");
         b.HasKey(x => x.Id);
-        b.Property(x => x.Status).HasConversion<string>();
+        b.HasIndex(x => x.UserId); // ix_subscriptions_user_id
+        // Mismo bug ya corregido en Measurement.Type/SyncOperation.Status (Bloque 4):
+        // HasConversion<string>() genérico daría "Active"/"Canceled"/"Expired", no
+        // 'ACTIVE'/'CANCELED'/'EXPIRED' (el CHECK de la BD es sensible a mayúsculas).
+        // A diferencia de esos dos, aquí los nombres del enum SÍ coinciden con el CHECK
+        // salvo por el case, así que basta con el mismo patrón ya usado en
+        // MembershipPlanConfiguration.Code un poco más arriba en este archivo — no hace
+        // falta un switch completo.
+        b.Property(x => x.Status).HasConversion(
+            v => v.ToString().ToUpperInvariant(),
+            v => (SubscriptionStatus)Enum.Parse(typeof(SubscriptionStatus), v, true));
     }
 }
 
@@ -220,6 +230,13 @@ public class PaymentConfiguration : IEntityTypeConfiguration<Payment>
         b.ToTable("payments");
         b.HasKey(x => x.Id);
         b.HasIndex(x => x.TransactionId).IsUnique();
-        b.Property(x => x.Status).HasConversion<string>();
+        b.HasIndex(x => x.SubscriptionId); // ix_payments_subscription_id (parcial en la BD, ver migración 012)
+        b.HasIndex(x => x.PlanId); // ix_payments_plan_id
+        b.HasIndex(x => new { x.PlanId, x.Status }); // ix_payments_plan_status
+        b.HasIndex(x => new { x.UserId, x.CreatedAt }); // ix_payments_user_created
+        // Mismo motivo que SubscriptionConfiguration.Status arriba.
+        b.Property(x => x.Status).HasConversion(
+            v => v.ToString().ToUpperInvariant(),
+            v => (PaymentStatus)Enum.Parse(typeof(PaymentStatus), v, true));
     }
 }

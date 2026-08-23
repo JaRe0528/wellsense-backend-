@@ -36,6 +36,12 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
             logger.LogWarning("Error de Sync {ErrorCode} en {Path}", sex.ErrorCode, context.Request.Path);
             await WriteProblem(context, (HttpStatusCode)sex.HttpStatus, sex.Message, new { code = sex.ErrorCode });
         }
+        catch (PaymentDomainException pex)
+        {
+            // Nunca loguear el paymentMethodToken de la request — solo el errorCode.
+            logger.LogWarning("Error de Payment {ErrorCode} en {Path}", pex.ErrorCode, context.Request.Path);
+            await WriteProblem(context, (HttpStatusCode)pex.HttpStatus, pex.Message, new { code = pex.ErrorCode });
+        }
         catch (UnauthorizedAccessException uex)
         {
             logger.LogWarning(uex, "Acceso no autorizado en {Path}", context.Request.Path);

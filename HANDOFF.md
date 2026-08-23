@@ -1,9 +1,8 @@
-# HANDOFF.md — Chat Backend (.NET), Bloque 5: SignalR (dashboard en vivo) + FCM (push)
+# HANDOFF.md — Chat Backend (.NET), Bloque 6: Memberships + Payments
 
-> Entregable del **Bloque 5**. Requiere Bloque 4 cerrado (ya lo está, 65/65
-> reales). Cubre el hub de SignalR para el dashboard web en vivo y el envío
-> de push por FCM, incluyendo la conexión entre ambos: cuando Android
-> sincroniza mediciones, el dashboard web conectado se entera al instante.
+> Entregable del **Bloque 6**. Requiere Bloque 5 cerrado (ya lo está, 80/80
+> reales). Cubre el catálogo de planes que la Web ya está esperando,
+> contratar/cambiar de plan con cobro real, y el historial de pagos.
 
 ---
 
@@ -12,242 +11,248 @@
 Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude
 correr `dotnet build`/`dotnet test` aquí. Lo que sí hice en este bloque:
 
-- Antes de escribir una sola línea de lógica nueva, **actualicé los 3
-  implementadores de `IWellSenseDbContext`** (incluyendo los 2 decoradores
-  de prueba) en el mismo cambio que agrandó la interfaz —el blindspot que
-  quedó documentado al cerrar Bloque 4 no se repitió esta vez.
-- **Encontré y corregí dos bugs de plomería yo mismo, antes de que llegaran
-  a compilación**, ambos por razonamiento cuidadoso, no por intentar
-  compilar: ver §2.
-- Validé `notification_tokens`/`notifications` contra Postgres real — no
-  hubo migración nueva en este bloque (esas tablas ya existían desde el
-  Bloque 1), pero sí demostré con un `INSERT` real por qué el handler de
-  registro de token necesita borrar el token anterior del mismo dispositivo
-  él mismo, en vez de confiar en el índice único de la BD (ver §2).
-- Los 3 barridos automatizados de siempre (colisión de namespace, balance de
-  llaves/paréntesis, tipos-vs-`using`) sobre las ~30 rutas nuevas/tocadas de
-  este bloque — limpio.
+- **Repetí el mismo bug de Bloque 4 en dos columnas más** (`subscriptions.status`,
+  `payments.status`), lo encontré ANTES de escribir lógica de negocio encima,
+  y lo demostré con `INSERT`s reales contra Postgres — ver §2.
+- **Demostré empíricamente, no solo razoné, por qué el orden de escritura
+  de `SubscribeToPlanCommandHandler` tenía que partirse en dos llamadas**:
+  corrí la secuencia "insertar antes de cancelar" dentro de una transacción
+  real y confirmé que Postgres la rechaza — ver §3.
+- **Encontré y corregí yo mismo un bug real en mi primer borrador** antes de
+  que llegara a ningún lado: el handler de suscripción llamaba al gateway
+  de pago DOS veces (hubiera cobrado la tarjeta dos veces) — ver §3.
+- Actualicé `IWellSenseDbContext` y sus 3 implementadores en el mismo cambio,
+  antes de escribir cualquier lógica — sin repetir el blindspot que se
+  quedó documentado tras Bloque 4.
+- Los 3 barridos automatizados de siempre, limpios sobre las ~35 rutas
+  nuevas/tocadas de este bloque.
 
 ---
 
-## 1. Qué quedó armado
+## 1. Decisión nueva de este bloque: Stripe como pasarela de pago
 
-### SignalR — dashboard en vivo
-- `DashboardHub` (`/hubs/dashboard`, requiere Bearer): cada conexión se une
-  automáticamente a un grupo `user-{userId}`. No expone métodos invocables
-  por el cliente — el dashboard solo escucha.
-- `IDashboardNotifier` (Application) / `SignalRDashboardNotifier` (Api):
-  mismo patrón que `IEmailSender`/`ICurrentUserService` — Application nunca
-  referencia `Microsoft.AspNetCore.SignalR` directamente.
-- El canal es deliberadamente de **invalidación, no de payload completo**:
-  el evento `dashboardUpdate` manda `(eventType, payload liviano)` — el
-  cliente decide qué volver a pedir por REST. No intenta adivinar la forma
-  del dashboard computado (eso es del bloque de ML/Dashboard).
-- **Conectado a Sync (Bloque 4)**: `SyncMeasurementsCommandHandler` ahora
-  publica `MeasurementsSyncedEvent` (evento de integración de MediatR, no
-  HTTP) cuando un sync trae datos nuevos de verdad. Un handler lo escucha y
-  lo reenvía por SignalR al grupo del usuario — ver §2 para el detalle de
-  por qué se modificó ese handler ya aprobado.
+`01-ARQUITECTURA-Y-STACK.md` nunca decidió una pasarela de pago — no estaba
+en el stack original. Elegí **Stripe**, justificado en el propio código
+(`StripePaymentGateway.cs`): soporta MXN nativamente, opera en México, y su
+modelo de tokenización (Stripe.js en el cliente, el backend nunca toca el
+número de tarjeta) es exactamente el requisito de PCI-DSS que
+`IPaymentGateway` ya exige por diseño. **Es una decisión nueva de este
+bloque, no del documento maestro — si el chat de arquitectura/orquestador
+ya tenía otra pasarela en mente (Conekta, Mercado Pago), avísenme y la
+cambio; el único punto de acoplamiento real es `StripePaymentGateway.cs`,
+todo lo demás (`IPaymentGateway`, los handlers, los endpoints) es agnóstico
+de cuál pasarela hay detrás.**
 
-### FCM — push real, no un stub
-- `IPushNotificationSender` (Application) / `FirebaseCloudMessagingSender`
-  (Infrastructure, usa el SDK oficial `FirebaseAdmin`): a diferencia de
-  `LoggingEmailSender` (Bloque 2, que quedó un stub permanente), aquí SÍ
-  implementé el envío real — Android necesita algo que funcione en cuanto
-  DevSecOps coloque `Firebase:CredentialsPath`, no un stub para siempre.
-  Sin credenciales configuradas, nunca lanza: loguea una advertencia una
-  sola vez y devuelve `false` en cada intento — la app no debe fallar por
-  esto, ni al arrancar ni en cada request.
-- `notification_tokens`: un dispositivo tiene **a lo sumo un token activo**
-  (invariante que impone el handler, no la BD — demostrado con un `INSERT`
-  real, ver §2).
-- `notifications` (centro in-app): se crea **siempre**, exista o no un
-  token FCM, y exista o no éxito de push — es la fuente de verdad de "esta
-  notificación existe para el usuario", el push es solo mejor-esfuerzo de
-  entrega inmediata.
+Implementé la integración real contra el SDK oficial `Stripe.net`, no un
+stub — mismo criterio que FCM (Bloque 5). **Aviso de honestidad**: la forma
+exacta de la API de Stripe.net (`PaymentIntentCreateOptions`, `Expand`,
+`LastPaymentError`) la escribí de memoria con mi mejor confianza, pero no
+la pude compilar contra el paquete real — es la pieza de este bloque con
+más probabilidad de necesitar un ajuste una vez que corran `dotnet build`
+con una cuenta de Stripe sandbox de verdad. Si algo de la forma exacta del
+SDK no compila, es un ajuste de esa clase puntual, no del diseño alrededor.
+
+---
+
+## 2. El mismo bug de Bloque 4, ahora en `subscriptions`/`payments`
+
+Ya había flagueado en el HANDOFF de Bloque 4 que `Subscription.Status` y
+`Payment.Status` seguían usando `HasConversion<string>()` genérico
+(`Enum.ToString()` → `"Active"`, `"Approved"`), mientras el `CHECK` de la BD
+exige `'ACTIVE'`, `'APPROVED'` (mayúsculas). Este bloque escribe a esas
+columnas por primera vez, así que lo corregí antes de tocar nada más —
+mismo patrón que `MembershipPlanConfiguration.Code` (que sí ya estaba bien
+desde Bloque 1: `v.ToString().ToUpperInvariant()` / `Enum.Parse(...,
+ignoreCase: true)`, más simple que el switch completo que usé para
+`Measurement.Type` porque aquí los nombres del enum SÍ coinciden con el
+`CHECK` salvo por mayúsculas).
+
+Demostrado contra Postgres real, mismo patrón que Bloque 4:
+
+```
+--- WRONG format ('Active') ---
+ERROR:  new row for relation "subscriptions" violates check constraint "subscriptions_status_check"
+--- CORRECT format ('ACTIVE') ---
+INSERT 0 1
+--- mismo resultado para payments.status ('Approved' falla, 'APPROVED' pasa) ---
+```
+
+---
+
+## 3. El diseño de `SubscribeToPlanCommandHandler` — dos hallazgos propios
+
+**Hallazgo 1 — mi primer borrador cobraba dos veces.** Al escribir el
+camino "plan pago aprobado", tenía una segunda llamada a
+`paymentGateway.ChargeAsync(...)` más abajo en el mismo método (residuo de
+una reestructuración a medio hacer). Lo atrapé releyendo el handler antes
+de darlo por terminado — el resultado del ÚNICO cobro real se guarda en una
+variable (`charge`) y se reutiliza; el gateway se llama **exactamente una
+vez** por invocación, verificado explícitamente en
+`SubscribeToPlanCommandHandlerTests` (`gateway.Charges.Should().ContainSingle()`).
+
+**Hallazgo 2 — por qué "cancelar la vieja + crear la nueva" no puede ir en
+un solo `SaveChanges`.** `ux_subscriptions_one_active_per_user` es un
+índice único **no diferible** (se evalúa por sentencia, no al final de la
+transacción). No hay garantía documentada de que EF Core emita el UPDATE de
+la fila vieja (Active→Canceled) antes que el INSERT de la fila nueva
+(Active) dentro de una misma llamada a `SaveChanges`, cuando son dos filas
+del mismo tipo sin relación de FK entre sí. Lo demostré, no solo lo razoné
+— corrí la secuencia contraria a mano dentro de una transacción real:
+
+```sql
+BEGIN;
+INSERT INTO subscriptions(...) VALUES (..., 'ACTIVE');  -- la nueva, ANTES
+UPDATE subscriptions SET status='CANCELED' WHERE id=...;  -- la vieja, DESPUÉS
+COMMIT;
+```
+```
+ERROR:  duplicate key value violates unique constraint "ux_subscriptions_one_active_per_user"
+```
+
+Por eso el handler parte la escritura en dos llamadas secuenciales
+explícitas: primero confirma que la vieja ya no está activa (sola), después
+crea la nueva (junto con el `Payment`, si hubo cobro — esa combinación SÍ
+es segura en una sola llamada porque hay una FK real
+`Payment.SubscriptionId → Subscription.Id`, y para relaciones de FK EF Core
+sí garantiza el orden). **Costo aceptado**: un crash exactamente entre esas
+dos llamadas dejaría al usuario sin suscripción activa por un instante —
+se autorrepara solo en el siguiente `GetMyMembership` (lazy-crea FREE), a
+costa de perder momentáneamente el plan pago hasta que reintente. Ventana
+extremadamente estrecha (dos escrituras casi instantáneas), documentada
+como riesgo en vez de resuelta con una transacción distribuida que nadie
+pidió para este bloque.
+
+---
+
+## 4. Qué quedó armado
 
 ### Endpoints
 
-**Notifications** (`api/v1/notifications`, todos requieren Bearer):
+**Memberships** (`api/v1/memberships`):
 
-| Método | Ruta | Request | Response | Errores |
-|---|---|---|---|---|
-| POST | `/tokens` | `{deviceId, fcmToken}` | 204 | 404 `DEVICE_NOT_FOUND` |
-| GET | `` | query `?unreadOnly=bool` | 200 `[{id, type, title, body, readAt, createdAt}]` | — |
-| PUT | `/{notificationId}/read` | — | 204 (idempotente) | — |
-| POST | `/test` | `{title, body}` | 200 `{notificationId, pushedCount, failedPushCount}` | — |
+| Método | Ruta | Auth | Request | Response | Errores |
+|---|---|---|---|---|---|
+| GET | `/plans` | No | — | 200 `[{id, code, name, priceCents, currency}]` | — |
+| GET | `/me` | Sí | — | 200 `{subscriptionId, planCode, planName, status, startedAt, endsAt}` — nunca 404 | — |
+| POST | `/subscribe` | Sí | `{planCode, paymentMethodToken?, idempotencyKey}` | 200 igual forma que `/me` + `paymentId?` | 400 validación/`PAYMENT_METHOD_REQUIRED`, 402 `PAYMENT_DECLINED`, 404 `PLAN_NOT_FOUND`, 503 `PAYMENT_GATEWAY_NOT_CONFIGURED` |
+| POST | `/cancel` | Sí | — | 204 | — |
 
-No hay endpoints nuevos de `Devices`/`Sync` — esos ya estaban del Bloque 4;
-este bloque solo agrega la publicación del evento (ver §2).
+**Payments** (`api/v1/payments`):
 
----
+| Método | Ruta | Auth | Response |
+|---|---|---|---|
+| GET | `/me` | Sí | 200 `[{id, planCode, amountCents, currency, status, cardBrand, cardLast4, createdAt}]` |
 
-## 2. Los dos bugs de plomería que atrapé antes de compilar
+`planCode`/`status` usan el mismo vocabulario que el `CHECK` de la BD
+(`FREE`/`BASIC`/`PRO`/`PROFESSIONAL`, `ACTIVE`/`CANCELED`/`EXPIRED`,
+`APPROVED`/`DECLINED`) en ambos sentidos.
 
-**1) `ICurrentUserService` dentro del Hub.** Mi primer borrador de
-`DashboardHub` inyectaba `ICurrentUserService` (que depende de
-`IHttpContextAccessor`) para saber a qué grupo unir la conexión — el mismo
-patrón que uso en todos los controladores. Antes de seguir, caí en que ese
-es un patrón conocido como frágil específicamente para SignalR: tras el
-upgrade a WebSocket, el `HttpContext` de la request HTTP original no es una
-fuente confiable durante toda la vida de la conexión. Lo corregí para leer
-`Context.User` directamente (el `ClaimsPrincipal` propio del Hub, que
-SignalR repuebla en cada conexión desde el mismo pipeline de
-autenticación) — el patrón recomendado por Microsoft para este caso
-específico.
+### Decisiones tomadas
 
-**2) El índice único de `notification_tokens` no evita que un dispositivo
-acumule tokens viejos.** El único índice único real es
-`(device_id, fcm_token)`, no `device_id` solo — así que un dispositivo que
-re-registra un token DISTINTO (normal: los tokens de FCM rotan) simplemente
-inserta una fila nueva sin que la BD se queje. Lo demostré con un `INSERT`
-real antes de dar el handler por bueno:
-
-```
---- mismo device_id + mismo fcm_token → sí falla (el índice único hace su trabajo) ---
-ERROR:  duplicate key value violates unique constraint "notification_tokens_device_id_fcm_token_key"
---- mismo device_id + fcm_token DISTINTO → inserta igual, sin quejarse ---
-INSERT 0 1
- count
--------
-     2
-```
-
-Por eso `RegisterNotificationTokenCommandHandler` borra explícitamente
-cualquier token previo del mismo `device_id` antes de insertar el nuevo —
-la invariante "un dispositivo, un token activo" la impone el handler, no la
-BD (documentado también en el propio código, no solo aquí).
-
----
-
-## 3. Modificación a código ya aprobado (Bloque 4) — flagueada para su revisión
-
-`SyncMeasurementsCommandHandler.cs` (Bloque 4, cerrado) se modificó para
-agregar `IPublisher publisher` al constructor y publicar
-`MeasurementsSyncedEvent` al final del camino feliz. **La lógica de
-idempotencia/clasificación del handler no se tocó en absoluto** — es
-exactamente el mismo código que ya aprobaron, con una sola llamada nueva
-agregada al final. Reglas de cuándo se publica, para que quede explícito:
-
-- Nunca en el replay idempotente (esos datos ya se habían reportado la
-  primera vez que se procesaron de verdad).
-- Nunca en la recuperación de carrera (la request que sí ganó ya lo habría
-  publicado ella misma).
-- Solo si `acceptedCount > 0` — un sync que solo trajo duplicados/rechazos
-  no es información nueva para el dashboard.
-
-Esto obligó a actualizar los 8 sitios de prueba que construían
-`SyncMeasurementsCommandHandler` directamente (nuevo 4to parámetro) — se
-agregó un `NoOpPublisher` reutilizable en `TestFakes.cs` para no repetir un
-mock en cada uno, y una prueba nueva (`Publishes_dashboard_event_only_when_new_measurements_were_actually_accepted`)
-que verifica explícitamente las reglas de arriba con un `SpyPublisher`.
-
----
-
-## 4. Decisiones tomadas en este bloque
-
-- **JWT vía query string (`?access_token=`), acotado por path a
-  `/hubs/dashboard` exclusivamente** — un WebSocket no puede mandar un
-  header `Authorization` normal en el handshake del navegador; este es el
-  patrón oficial de ASP.NET Core para SignalR + JWT bearer. El resto de la
-  Api sigue exigiendo el header normal — el chequeo de path en
-  `OnMessageReceived` es lo que evita que esto debilite la autenticación de
-  cualquier otro endpoint.
-- **El canal de SignalR no transporta el payload completo del dashboard,
-  solo un aviso de "algo cambió"** — evita que este bloque tenga que
-  inventar/adivinar la forma de los datos que el bloque de ML/Dashboard
-  todavía no ha diseñado.
-- **`SendNotificationCommand` es un servicio reutilizable vía MediatR, no
-  solo un endpoint HTTP** — cualquier módulo futuro (ML avisando estrés
-  alto, un recordatorio) puede mandarlo directo sin pasar por HTTP. El
-  endpoint `/notifications/test` existe para que Web/Android puedan validar
-  el flujo completo sin depender de que otro bloque ya dispare
-  notificaciones reales.
-- **Un push fallido nunca tumba nada** — ni el flujo que lo llama
-  (`IPushNotificationSender.TrySendAsync` devuelve `bool`, nunca lanza), ni
-  el registro in-app (`notifications` se crea siempre, independiente del
-  resultado del push).
-- **No se implementó limpieza automática de tokens muertos** (un push que
-  falla por token inválido/expirado no borra ese `notification_token`) —
-  decisión consciente de alcance, ver riesgo #2.
+- **`GET /plans` es público** (`AllowAnonymous`) — es contenido de una
+  página de precios normal, no información de cuenta de nadie. La Web
+  puede mostrarlo sin sesión.
+- **`GET /me` nunca da 404** — mismo patrón get-or-create perezoso que
+  `GetMyProfile` (Bloque 3): todo usuario "tiene" una membresía siempre; si
+  nunca contrató nada, se le crea una suscripción FREE en el primer
+  llamado, sin tocar `RegisterCommandHandler` (Bloque 2, cerrado).
+- **"Cancelar" siempre significa "volver a FREE"** — no existe en este
+  modelo un estado "sin ninguna suscripción activa". `CancelSubscriptionCommandHandler`
+  reutiliza `SubscribeToPlanCommand` vía MediatR en vez de duplicar la
+  lógica de reemplazo.
+- **El monto a cobrar SIEMPRE lo decide el servidor** a partir de
+  `membership_plans.price_cents`/`currency` — el cliente nunca manda un
+  monto. Aceptar un monto del cliente permitiría pagar $1 por un plan de
+  $399 con un cliente modificado.
+- **`idempotencyKey` es del cliente**, mismo idioma que `requestId` en
+  `/sync` (Bloque 4) — se pasa directo al `RequestOptions.IdempotencyKey`
+  de Stripe, que deduplica del lado de la pasarela ante reintentos de red.
+  No se agregó una columna nueva para rastrearlo del lado nuestro —
+  suficiente con lo que Stripe ya garantiza.
+- **Un plan FREE nunca genera fila en `payments`** — el `CHECK
+  (amount_cents > 0)` de la BD literalmente no lo permite; confirmado con
+  el mismo diseño (`if (plan.PriceCents > 0)` antes de tocar `payments` en
+  absoluto).
+- **Una suscripción paga dura 1 mes desde que se activa**
+  (`EndsAt = StartedAt.AddMonths(1)`) — decisión explícita, documentada en
+  el propio handler. **Este bloque NO implementa el job que renueva o
+  degrada a FREE cuando `EndsAt` ya pasó** — mismo tipo de alcance que la
+  decisión de zona horaria del Bloque 3: se deja la decisión y el dato
+  listo, no se construye el job que nadie pidió todavía.
+- **Se preserva el historial de suscripciones** (cada cambio de plan crea
+  una fila nueva, nunca sobreescribe la anterior) en vez de reutilizar la
+  misma fila — consistente con lo que sugiere el propio índice único
+  parcial de la BD (uno ACTIVO a la vez, no uno solo para siempre).
 
 ---
 
 ## 5. Qué pruebas existen
 
 Unitarias (EF InMemory):
-- `Notifications/NotificationTokensTests`: registrar crea la fila,
-  re-registrar reemplaza (no duplica), registrar para un dispositivo ajeno
-  lanza `DEVICE_NOT_FOUND`.
-- `Notifications/ListAndMarkNotificationsTests`: aislamiento entre
-  usuarios, orden más-reciente-primero, filtro `unreadOnly`, marcar leída
-  es idempotente, marcar leída de otro usuario no hace nada silenciosamente.
-- `Notifications/SendNotificationCommandHandlerTests`: el registro in-app
-  se crea aunque no haya tokens; empuja a TODOS los tokens del usuario; un
-  push fallido no impide que el registro in-app se persista.
-- `Notifications/MeasurementsSyncedEventHandlerTests`: el handler del
-  evento reenvía al notifier con el `eventType` estable
-  `"measurements_synced"`.
-- `Sync/SyncMeasurementsCommandHandlerTests` (extendida): nueva prueba que
-  confirma que el evento de dashboard se publica solo cuando de verdad se
-  aceptó algo nuevo — no en duplicados/rechazos puros.
+- `Memberships/SubscribeToPlanCommandHandlerTests` (la más importante): FREE
+  nunca llama al gateway ni crea `Payment`; plan pago sin token lanza
+  `PAYMENT_METHOD_REQUIRED`; aprobado llama al gateway **exactamente una
+  vez** y liga el `Payment` a la nueva suscripción; rechazado crea el
+  `Payment` sin ligar y nunca toca `subscriptions`; cambiar de plan
+  desactiva el anterior y deja **solo uno** activo conservando el
+  historial; código de plan inexistente lanza `PLAN_NOT_FOUND`.
+- `Memberships/ListPlansAndGetMyMembershipTests`: catálogo ordenado por
+  precio; lazy-creación de FREE en el primer llamado; el segundo llamado
+  no duplica.
+- `Memberships/CancelSubscriptionCommandHandlerTests`: verifica tanto QUÉ
+  comando manda (`SubscribeToPlanCommand` apuntando a FREE) como el
+  resultado real en BD tras pasar por el handler real, sin volver a cobrar.
+- `Payments/ListMyPaymentsQueryHandlerTests`: aislamiento entre usuarios,
+  incluye tanto aprobados como rechazados, orden más-reciente-primero.
 
-Integración HTTP end-to-end:
-- `Integration/NotificationsFlowEndpointTests`: flujo completo
-  registrar-token → enviar-test → listar → marcar-leída, y registrar token
-  para el dispositivo de otro usuario da 404 real.
-- `Integration/DashboardHubEndpointTests` — **la prueba más importante de
-  este bloque**: conecta un cliente SignalR REAL (`Microsoft.AspNetCore.SignalR.Client`,
-  transporte forzado a LongPolling porque `TestServer` no soporta upgrade
-  real a WebSocket) contra el pipeline HTTP real, con el JWT por query
-  string tal como lo mandaría un navegador. Dispara un `/sync/measurements`
-  real y confirma que el dashboard conectado recibe el evento
-  `dashboardUpdate` con `eventType == "measurements_synced"` dentro de 10
-  segundos. Esto cubre la plomería nueva y riesgosa de punta a punta, no
-  solo la lógica de negocio que la dispara.
+Integración HTTP end-to-end (`CustomWebApplicationFactory`, extendida en
+este bloque):
+- Se agregó **semilla de los 4 planes** al store InMemory de pruebas (la
+  migración 012 real los inserta en Postgres vía DDL; un InMemory nuevo
+  arranca vacío — sin esto, cualquier prueba de `/memberships/*` fallaría).
+- Se agregó `FakePaymentGateway` como reemplazo de `IPaymentGateway`
+  (expuesto como propiedad pública de la factory, igual que
+  `CapturedEmails`) — sin esto, cualquier intento de cobro real recibiría
+  503 `PAYMENT_GATEWAY_NOT_CONFIGURED` en pruebas.
+- `Integration/MembershipsFlowEndpointTests`: catálogo sin auth, `/me`
+  lazy-FREE, contratar plan pago aprobado (activa + registra pago), tarjeta
+  rechazada (402, la membresía activa NO cambia), falta el token (400),
+  cancelar vuelve a FREE, `/me` y `/subscribe` sí exigen auth pero
+  `/plans` no.
 
 ---
 
 ## 6. Qué necesita Web/Android de este bloque
 
-- **Web**: conectarse a `wss://.../hubs/dashboard?access_token={jwt}` (o el
-  transporte que el cliente de SignalR elija automáticamente) y escuchar el
-  evento `"dashboardUpdate"` → `(eventType: string, payload: object)`. Por
-  ahora el único `eventType` es `"measurements_synced"` con
-  `{ acceptedCount, syncedAt }` — al recibirlo, volver a pedir lo que el
-  dashboard necesite mostrar por REST (este canal no manda el dato
-  calculado, solo avisa que hay algo nuevo).
-- **Android**: registrar el token FCM tras obtenerlo del SDK de Firebase,
-  vía `POST /notifications/tokens`, y volver a registrarlo cada vez que
-  Firebase entregue un token rotado (`onNewToken` del SDK) — el backend ya
-  maneja el reemplazo, Android no necesita "borrar el viejo" primero.
-- **Ambos**: `POST /notifications/test` para validar el flujo de punta a
-  punta en desarrollo sin depender de otro bloque.
+- **Contratos exactos**: tabla de §4. El monto SIEMPRE lo calcula el
+  servidor — el cliente solo manda `planCode`.
+- **`paymentMethodToken` viene del SDK de Stripe en el cliente** (Stripe.js
+  en Web, el SDK de Stripe para Android/Kotlin) — el backend nunca acepta
+  ni espera datos de tarjeta en claro.
+- **`idempotencyKey` debe generarse una vez por intento de compra y
+  reenviarse igual en reintentos** — mismo patrón que `requestId` en
+  `/sync/measurements` (Bloque 4).
+- **`GET /memberships/plans` es público** — la página de precios puede
+  mostrarse sin que el usuario haya iniciado sesión.
+- **`GET /memberships/me` nunca da 404** — un usuario recién registrado ya
+  tiene "membresía FREE" desde el primer `GET`, sin ningún paso adicional.
 
 ---
 
 ## 7. Riesgos abiertos
 
-1. **`Firebase:CredentialsPath` sin configurar en cualquier ambiente real**
-   deja el push completamente deshabilitado de forma silenciosa (solo un
-   log de advertencia una vez) — es el comportamiento correcto para no
-   tumbar la app, pero significa que un despliegue real sin ese archivo
-   "funciona" pero nunca manda push, sin que nada grite fuerte sobre eso
-   más allá del log. Responsabilidad de DevSecOps, mismo patrón que SMTP.
-2. **Tokens FCM muertos no se limpian automáticamente.** Un push que falla
-   repetidamente contra el mismo token (típico de una desinstalación de la
-   app) deja esa fila en `notification_tokens` indefinidamente — no rompe
-   nada, solo desperdicia llamadas a FCM. Se podría resolver interpretando
-   el código de error específico que devuelve FCM para tokens
-   inválidos/no-registrados y borrando esa fila entonces — no lo hice en
-   este bloque, `IPushNotificationSender.TrySendAsync` solo devuelve
-   `bool`, no la razón del fallo.
-3. **`AspNetCoreRateLimit` no cubre `/notifications/test`** — un usuario
-   autenticado podría llamar este endpoint repetidamente para forzar envíos
-   de push. No es P0 como `/device-link/redeem` (requiere estar
-   autenticado, no es una superficie de fuerza bruta), pero si se vuelve un
-   problema real, es una regla más en `appsettings.json:IpRateLimiting`.
-4. Mismo aviso de siempre: no compilado/probado por mí en mi propio
+1. **Stripe.net sin compilar contra el paquete real** — ver §1, la pieza
+   con más probabilidad de necesitar ajuste de forma (no de diseño) una vez
+   que corran `dotnet build` con acceso real a NuGet.
+2. **Ventana de carrera estrecha en `SubscribeToPlanCommandHandler`** entre
+   sus dos `SaveChanges` secuenciales — ver §3, documentada y aceptada, no
+   resuelta con una transacción distribuida.
+3. **No hay job de renovación/expiración de suscripciones pagas** — `EndsAt`
+   se calcula y se guarda, pero nada actúa sobre él todavía cuando pasa.
+   Candidato natural para un futuro bloque de jobs programados.
+4. **Elección de Stripe pendiente de confirmación** del chat de
+   arquitectura/orquestador — ver §1.
+5. Mismo aviso de siempre: no compilado/probado por mí en mi propio
    entorno — necesito `dotnet build && dotnet test` de su lado antes de
    aprobar.
 
@@ -256,18 +261,17 @@ Integración HTTP end-to-end:
 ## 8. Checklist de las 10 capas del DoD
 
 - [x] Validador (FluentValidation) en cada comando
-- [x] Prueba unitaria de cada handler, incluyendo el caso de seguridad
-      (registrar token para dispositivo ajeno)
-- [x] Prueba de integración HTTP end-to-end, incluyendo una conexión
-      SignalR real de punta a punta (no solo la lógica que la dispara)
-- [x] Documentación de API (Swagger, `[ProducesResponseType]`)
-- [x] Manejo de errores consistente (reutiliza `SyncDomainException` para
-      "dispositivo no encontrado" — mismo concepto que Bloque 4, no se creó
-      una excepción nueva para lo mismo)
-- [x] Dos bugs de plomería reales encontrados y corregidos antes de
-      compilar — uno de patrón SignalR, uno demostrado contra Postgres real
-- [x] Modificación a código aprobado (Bloque 4) flagueada explícitamente,
-      con las reglas exactas documentadas y una prueba dedicada
+- [x] Prueba unitaria de cada handler, incluyendo los 2 hallazgos propios
+      (cobro único, orden de escritura) verificados explícitamente
+- [x] Prueba de integración HTTP end-to-end de los 5 endpoints nuevos
+- [x] Documentación de API (Swagger, `[ProducesResponseType]`, incluyendo
+      402/503)
+- [x] Manejo de errores consistente (`PaymentDomainException` nueva,
+      agregada al middleware global)
+- [x] Bug heredado de Bloque 4 encontrado y corregido antes de escribir
+      lógica encima — demostrado contra Postgres real
+- [x] Decisión de diseño (orden de escritura no atómico) validada
+      empíricamente contra Postgres real, no solo razonada
 - [ ] Compilación y `dotnet test` reales — **pendiente de tu lado**, ver §0
 
 Quedo a la espera de tu luz verde (o correcciones) antes del siguiente

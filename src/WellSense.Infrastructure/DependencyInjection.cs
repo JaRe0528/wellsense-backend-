@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WellSense.Application.Common.Interfaces;
 using WellSense.Infrastructure.Common;
 using WellSense.Infrastructure.Notifications;
+using WellSense.Infrastructure.Payments;
 using WellSense.Infrastructure.Persistence;
 using WellSense.Infrastructure.Security;
 
@@ -38,6 +39,7 @@ public static class DependencyInjection
         services.AddScoped<IUniqueConstraintViolationDetector, UniqueConstraintViolationDetector>();
         services.AddScoped<IEmailSender, LoggingEmailSender>();
         services.AddScoped<IPushNotificationSender, FirebaseCloudMessagingSender>();
+        services.AddScoped<IPaymentGateway, StripePaymentGateway>();
 
         return services;
     }

@@ -35,6 +35,9 @@
          Google.Apis.Auth (GoogleCredential para las credenciales de la cuenta de
          servicio). Ver FirebaseCloudMessagingSender.cs. -->
     <PackageReference Include="FirebaseAdmin" Version="3.1.0" />
+    <!-- Bloque 6 (Memberships+Payments): SDK oficial de Stripe para .NET — ver
+         StripePaymentGateway.cs para la justificación de por qué Stripe. -->
+    <PackageReference Include="Stripe.net" Version="47.4.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\WellSense.Application\WellSense.Application.csproj" />

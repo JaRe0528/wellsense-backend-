@@ -84,3 +84,24 @@ public class RecordingPushNotificationSender : IPushNotificationSender
         return Task.FromResult(AlwaysSucceeds);
     }
 }
+
+/// <summary>
+/// Nunca cobra de verdad — registra cada intento (para verificar que ChargeAsync se
+/// llama EXACTAMENTE una vez por Subscribe, nunca dos) y responde con el resultado que
+/// la prueba configure. Default: aprueba, tarjeta "visa"/"4242".
+/// </summary>
+public class FakePaymentGateway : IPaymentGateway
+{
+    public bool NextApproved { get; set; } = true;
+    public string? NextDeclineReason { get; set; } = "insufficient_funds";
+    public List<(string Token, int AmountCents, string Currency, string IdempotencyKey)> Charges { get; } = [];
+
+    public Task<ChargeResult> ChargeAsync(
+        string paymentMethodToken, int amountCents, string currency, string idempotencyKey, CancellationToken ct = default)
+    {
+        Charges.Add((paymentMethodToken, amountCents, currency, idempotencyKey));
+        return Task.FromResult(NextApproved
+            ? new ChargeResult(true, $"tx-{Guid.NewGuid()}", "visa", "4242", null)
+            : new ChargeResult(false, $"tx-{Guid.NewGuid()}", null, null, NextDeclineReason));
+    }
+}

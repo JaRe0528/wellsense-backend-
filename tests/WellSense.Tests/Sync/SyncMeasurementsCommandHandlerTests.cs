@@ -273,6 +273,9 @@ file class ThrowingDbContextDecoratorWithSideEffect(
     public Microsoft.EntityFrameworkCore.DbSet<SyncOperation> SyncOperations => inner.SyncOperations;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Notifications.NotificationToken> NotificationTokens => inner.NotificationTokens;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Notifications.Notification> Notifications => inner.Notifications;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Billing.MembershipPlan> MembershipPlans => inner.MembershipPlans;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Billing.Subscription> Subscriptions => inner.Subscriptions;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Billing.Payment> Payments => inner.Payments;
 
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
