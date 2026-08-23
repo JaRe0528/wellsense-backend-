@@ -31,6 +31,11 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
             logger.LogWarning("Error de Auth {ErrorCode} en {Path}", aex.ErrorCode, context.Request.Path);
             await WriteProblem(context, (HttpStatusCode)aex.HttpStatus, aex.Message, new { code = aex.ErrorCode });
         }
+        catch (SyncDomainException sex)
+        {
+            logger.LogWarning("Error de Sync {ErrorCode} en {Path}", sex.ErrorCode, context.Request.Path);
+            await WriteProblem(context, (HttpStatusCode)sex.HttpStatus, sex.Message, new { code = sex.ErrorCode });
+        }
         catch (UnauthorizedAccessException uex)
         {
             logger.LogWarning(uex, "Acceso no autorizado en {Path}", context.Request.Path);

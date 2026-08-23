@@ -20,6 +20,15 @@ public class AuthDomainException(string errorCode, string message, int httpStatu
     public static AuthDomainException AccountNotActive()
         => new("ACCOUNT_NOT_ACTIVE", "Esta cuenta no está activa.", 403);
 
+    /// <summary>
+    /// El JWT es válido (firma/expiración correctas) pero el usuario que representa ya
+    /// no existe o fue borrado (soft-delete) — caso borde: token emitido antes de un
+    /// DeleteMe, todavía dentro de su ventana de 15 min de vida. 401, no 404: desde la
+    /// perspectiva del cliente, su sesión ya no es válida, no que "el recurso no existe".
+    /// </summary>
+    public static AuthDomainException AccountNotFound()
+        => new("ACCOUNT_NOT_FOUND", "Esta cuenta ya no existe.", 401);
+
     public static AuthDomainException EmailAlreadyRegistered()
         => new("EMAIL_ALREADY_REGISTERED", "Ya existe una cuenta con este correo.", 409);
 

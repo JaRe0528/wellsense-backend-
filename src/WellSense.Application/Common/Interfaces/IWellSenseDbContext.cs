@@ -2,13 +2,16 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using WellSense.Domain.Devices;
 using WellSense.Domain.Identity;
+using WellSense.Domain.Measurements;
+using WellSense.Domain.Profiles;
 
 namespace WellSense.Application.Common.Interfaces;
 
 /// <summary>
 /// Abstracción del DbContext que puede usar Application sin depender de Npgsql/EF.Design.
-/// Solo expone los DbSets que Auth necesita en este bloque; el resto de módulos
-/// agregarán sus propios DbSets a esta interfaz cuando les toque su bloque.
+/// Expone los DbSets que Auth (Bloque 2), Users+Profile (Bloque 3) y
+/// Devices+Measurements+Sync (Bloque 4) necesitan; el resto de módulos agregarán los
+/// suyos cuando les toque su bloque.
 /// </summary>
 public interface IWellSenseDbContext
 {
@@ -19,6 +22,11 @@ public interface IWellSenseDbContext
     DbSet<AuditLog> AuditLogs { get; }
     DbSet<Device> Devices { get; }
     DbSet<DeviceLinkCode> DeviceLinkCodes { get; }
+    DbSet<Profile> Profiles { get; }
+    DbSet<Goal> Goals { get; }
+    DbSet<OnboardingSurvey> OnboardingSurveys { get; }
+    DbSet<Measurement> Measurements { get; }
+    DbSet<SyncOperation> SyncOperations { get; }
 
     /// <summary>
     /// Una sola llamada = una sola transacción implícita de EF/Postgres. Los handlers

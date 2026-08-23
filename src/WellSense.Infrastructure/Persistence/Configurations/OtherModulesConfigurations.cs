@@ -19,8 +19,32 @@ public class MeasurementConfiguration : IEntityTypeConfiguration<Measurement>
     {
         b.ToTable("measurements");
         b.HasKey(x => new { x.Id, x.RecordedAt }); // PK compuesta: partition key debe integrar toda PK
-        b.Property(x => x.Type).HasConversion<string>();
+        // NUNCA HasConversion<string>() genérico aquí: eso serializa con Enum.ToString()
+        // ("HeartRate"), que no coincide con el CHECK de la BD ('HEART_RATE') y haría
+        // fallar TODO insert. Debe ser el mismo vocabulario que MeasurementTypeExtensions
+        // (Domain), aunque a propósito no comparten código entre sí.
+        b.Property(x => x.Type).HasConversion(v => TypeToDb(v), v => TypeFromDb(v));
     }
+
+    private static string TypeToDb(MeasurementType v) => v switch
+    {
+        MeasurementType.HeartRate => "HEART_RATE",
+        MeasurementType.Steps => "STEPS",
+        MeasurementType.Spo2 => "SPO2",
+        MeasurementType.Calories => "CALORIES",
+        MeasurementType.SkinTemp => "SKIN_TEMP",
+        _ => throw new ArgumentOutOfRangeException(nameof(v))
+    };
+
+    private static MeasurementType TypeFromDb(string v) => v switch
+    {
+        "HEART_RATE" => MeasurementType.HeartRate,
+        "STEPS" => MeasurementType.Steps,
+        "SPO2" => MeasurementType.Spo2,
+        "CALORIES" => MeasurementType.Calories,
+        "SKIN_TEMP" => MeasurementType.SkinTemp,
+        _ => throw new ArgumentOutOfRangeException(nameof(v))
+    };
 }
 
 public class SleepSessionConfiguration : IEntityTypeConfiguration<SleepSession>
@@ -52,8 +76,26 @@ public class SyncOperationConfiguration : IEntityTypeConfiguration<SyncOperation
     {
         b.ToTable("sync_operations");
         b.HasKey(x => x.Id);
-        b.Property(x => x.Status).HasConversion<string>();
+        b.HasIndex(x => new { x.DeviceId, x.RequestId }).IsUnique(); // ux_sync_operations_device_request
+        // Mismo motivo que MeasurementConfiguration.Type: HasConversion<string>() genérico
+        // daría "Processing"/"Completed"/"Failed", no 'PROCESSING'/'COMPLETED'/'FAILED'
+        // (el CHECK de la BD es sensible a mayúsculas).
+        b.Property(x => x.Status).HasConversion(v => StatusToDb(v), v => StatusFromDb(v));
     }
+
+    private static string StatusToDb(SyncStatus v) => v switch
+    {
+        SyncStatus.Completed => "COMPLETED",
+        SyncStatus.Failed => "FAILED",
+        _ => "PROCESSING"
+    };
+
+    private static SyncStatus StatusFromDb(string v) => v switch
+    {
+        "COMPLETED" => SyncStatus.Completed,
+        "FAILED" => SyncStatus.Failed,
+        _ => SyncStatus.Processing
+    };
 }
 
 public class WellnessScoreConfiguration : IEntityTypeConfiguration<WellnessScore>
