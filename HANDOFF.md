@@ -7,6 +7,55 @@
 
 ---
 
+## Actualización — `dotnet build` fallaba en `WellSense.Tests` tras el merge (5 errores CS0535)
+
+Al hacer `git pull` de este bloque, `dotnet build` compilaba
+`WellSense.Domain/Application/Infrastructure/Api` sin problema pero fallaba
+en `WellSense.Tests` con 5 errores `CS0535` sobre
+`tests/WellSense.Tests/TestHelpers/ThrowingDbContextDecorator.cs`, todos
+apuntando a la misma línea: no implementaba `IWellSenseDbContext.Profiles`,
+`.Goals`, `.OnboardingSurveys`, `.Measurements` ni `.SyncOperations`.
+
+**Causa**: `ThrowingDbContextDecorator` es un decorador manual de
+`IWellSenseDbContext` (usado para simular una `DbUpdateException` en las
+primeras N llamadas a `SaveChangesAsync`, ver `GenerateDeviceLinkCodeCommandHandlerTests`
+y `SyncMeasurementsCommandHandlerTests`) que implementa la interfaz a mano,
+delegando cada miembro al `WellSenseDbContext` real que envuelve. Este
+bloque agregó 5 `DbSet<T>` nuevos a `IWellSenseDbContext` (`Profiles`,
+`Goals`, `OnboardingSurveys`, `Measurements`, `SyncOperations`, ver §1/§3 de
+este mismo HANDOFF), pero el decorador no se actualizó junto con la
+interfaz — al ser una implementación manual (no generada), agregar un
+miembro a la interfaz no rompe nada hasta que el compilador intenta
+verificar que todas las implementaciones la cumplen, que es exactamente lo
+que pasó acá.
+
+**Fix**: agregar las 5 propiedades faltantes al decorador, cada una
+delegando al `WellSenseDbContext` interno igual que las demás (mismo
+patrón que `Users`, `Devices`, etc.):
+
+```csharp
+public DbSet<Profile> Profiles => inner.Profiles;
+public DbSet<Goal> Goals => inner.Goals;
+public DbSet<OnboardingSurvey> OnboardingSurveys => inner.OnboardingSurveys;
+public DbSet<Measurement> Measurements => inner.Measurements;
+public DbSet<SyncOperation> SyncOperations => inner.SyncOperations;
+```
+
+(más los `using WellSense.Domain.Measurements;` y
+`using WellSense.Domain.Profiles;` que esos tipos requieren). No hizo falta
+tocar `IWellSenseDbContext`, `WellSenseDbContext` ni ninguno de los dos
+tests que usan el decorador — ambos siguen probando solo el camino de
+colisión/reintento en `Users`/`DeviceLinkCodes` y en `Measurements`
+respectivamente, sin depender de los otros DbSets nuevos.
+
+Nota para el próximo bloque: cualquier `DbSet<T>` que se agregue a
+`IWellSenseDbContext` de acá en adelante también hay que agregarlo a este
+decorador, aunque el bloque que lo agrega no lo use — si no, el build de
+`WellSense.Tests` se rompe igual que ahora, sin relación con la lógica del
+bloque nuevo en sí.
+
+---
+
 ## 0. Aviso operativo (se mantiene)
 
 Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude
