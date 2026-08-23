@@ -30,6 +30,18 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
     public readonly string DbName = $"wellsense-e2e-{Guid.NewGuid()}";
     public CapturingEmailSender CapturedEmails { get; } = new();
 
+    /// <summary>
+    /// Desactivado por defecto: la enorme mayoría de las clases de prueba HTTP (Auth,
+    /// Profile, DeviceSync) no están probando límites de tasa, pero comparten la MISMA
+    /// instancia de factory (vía IClassFixture) entre varias pruebas de la misma clase —
+    /// cada llamada a /register desde una prueba distinta cuenta contra el mismo límite
+    /// real (5/hora), así que la 6ta prueba de una clase con 6 registros recibía 429 en
+    /// vez del 201 esperado, sin que hubiera ningún bug de negocio real detrás. Solo
+    /// <see cref="RateLimitingEndpointTests"/> necesita el rate limiting real activo —
+    /// usa <see cref="RateLimitedWebApplicationFactory"/> en su lugar.
+    /// </summary>
+    protected virtual bool EnableRateLimiting => false;
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureAppConfiguration((_, config) =>
@@ -42,7 +54,8 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
                 // AccessTokenMinutes) SÍ es la real de appsettings.json.
                 ["ConnectionStrings:Postgres"] = "Host=localhost;Database=unused;Username=unused;Password=unused",
                 ["Jwt:Secret"] = "test-secret-please-not-in-prod-32bytes-min!!",
-                ["DeviceLink:Pepper"] = "test-pepper-please-not-in-prod"
+                ["DeviceLink:Pepper"] = "test-pepper-please-not-in-prod",
+                ["RateLimiting:Enabled"] = EnableRateLimiting.ToString()
             });
         });
 
@@ -89,4 +102,18 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
             services.AddSingleton<IEmailSender>(CapturedEmails);
         });
     }
+}
+
+/// <summary>
+/// Única factory con rate limiting real activo — exclusiva de
+/// <see cref="RateLimitingEndpointTests"/>. El resto de las clases de integración
+/// (Auth, Profile, DeviceSync) deben usar <see cref="CustomWebApplicationFactory"/> a
+/// secas (rate limiting desactivado), porque no están probando límites de tasa y
+/// comparten la misma instancia de factory entre varias pruebas de su clase — con el
+/// límite real activo, esas pruebas se contaminan entre sí sin que haya ningún bug de
+/// negocio detrás (ver el HANDOFF del bloque donde se corrigió esto).
+/// </summary>
+public class RateLimitedWebApplicationFactory : CustomWebApplicationFactory
+{
+    protected override bool EnableRateLimiting => true;
 }

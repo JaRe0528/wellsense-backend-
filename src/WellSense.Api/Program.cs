@@ -1,6 +1,7 @@
 using System.Text;
 using AspNetCoreRateLimit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using WellSense.Api.Middleware;
@@ -124,7 +125,20 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseIpRateLimiting();
+// Flag leído de configuración (default true — nunca deshabilitado en producción por
+// accidente). Existe específicamente para que las pruebas de integración puedan
+// desactivar el rate limiting real sin tener que levantar servidores/relojes
+// artificiales: la mayoría de las clases de prueba HTTP (Auth, Profile, DeviceSync)
+// no están probando límites de tasa, y compartir la misma IpRateLimitOptions:GeneralRules
+// real (ej. 5 registros/hora) entre varias pruebas de la misma clase — todas contra el
+// mismo IWebHostBuilder/factory — las hacía fallar entre sí sin que hubiera ningún bug
+// de negocio real. Solo RateLimitingEndpointTests necesita esto activo; ver
+// CustomWebApplicationFactory/RateLimitedWebApplicationFactory en Tests.
+if (app.Configuration.GetValue("RateLimiting:Enabled", true))
+{
+    app.UseIpRateLimiting();
+}
+
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();

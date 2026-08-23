@@ -7,6 +7,79 @@
 
 ---
 
+## Actualización — 63/65 → 65/65: 2 bugs de pruebas corregidos (handler intacto)
+
+Compilaste y corriste de verdad: 63/65 pasaron. Las 2 fallas eran bugs de
+cómo estaban armadas las pruebas, no del handler — confirmado, no toqué
+`SyncMeasurementsCommandHandler.cs` en absoluto para esto.
+
+**Bug 1 — rate limiting real contaminando pruebas que no lo estaban
+probando.** `ProfileFlowEndpointTests` (y por la misma razón,
+`AuthFlowEndpointTests`/`DeviceSyncFlowEndpointTests`) comparten una única
+instancia de `CustomWebApplicationFactory` entre las 6 pruebas de su clase
+(vía `IClassFixture`), y cada una llama `RegisterVerifyAndLoginAsync()` →
+un `/register` real. Con el límite real de 5/hora activo, la 6ta prueba
+recibía 429 en vez de 201 — nunca fue un bug de negocio, era que las
+pruebas de Auth/Profile/DeviceSync no tienen por qué correr con el rate
+limiting real encendido.
+
+Fix aplicado exactamente como lo diste:
+- `CustomWebApplicationFactory`: nuevo `protected virtual bool
+  EnableRateLimiting => false;`, propagado a la configuración de la app vía
+  `RateLimiting:Enabled` (nueva entrada en `appsettings.json`, default
+  `true` para producción).
+- `Program.cs`: `app.UseIpRateLimiting()` ahora es condicional a
+  `app.Configuration.GetValue("RateLimiting:Enabled", true)`.
+- Nueva `RateLimitedWebApplicationFactory : CustomWebApplicationFactory`
+  con `EnableRateLimiting => true` — la ÚNICA factory con el límite real
+  activo.
+- `RateLimitingEndpointTests` migrado a `IClassFixture<RateLimitedWebApplicationFactory>`.
+  `AuthFlowEndpointTests`/`ProfileFlowEndpointTests`/`DeviceSyncFlowEndpointTests`
+  no se tocaron — ya usaban la factory base, que ahora tiene el límite
+  desactivado por default.
+- Efecto secundario que atrapé yo mismo al escribir este fix: agregar
+  `GetValue<T>` en `Program.cs` es un método de extensión de
+  `Microsoft.Extensions.Configuration` (mismo tipo de bug que el de
+  `IConfiguration` del Bloque 2) — agregué el `using` correspondiente antes
+  de que se convirtiera en un tercer round de "falta un using".
+
+**Bug 2 — el efecto secundario de la prueba de carrera compartía el
+`DbContext` del handler bajo prueba.** En
+`Concurrent_race_on_same_request_id_returns_the_winning_result_instead_of_throwing`,
+el callback que simulaba "otro proceso ganando la carrera" llamaba
+`inMemory.SaveChanges()` sobre la MISMA instancia que el handler ya estaba
+usando — ese `SaveChanges()` confirmaba de paso la `SyncOperation`
+"perdedora" del propio handler (`AcceptedCount=1`), no solo la ganadora
+(`AcceptedCount=7`), y el `FirstOrDefaultAsync` sin `OrderBy` agarraba
+cualquiera de las dos de forma no confiable.
+
+Fix aplicado exactamente como lo diste: el callback ahora crea su propia
+instancia independiente de `WellSenseDbContext` vía
+`InMemoryDbContextFactory.Create(sharedDbName)` — mismo nombre de base que
+`inMemory`, pero un `DbContext`/change tracker completamente aparte. Su
+`SaveChanges()` solo confirma la fila ganadora; el change tracker del
+handler bajo prueba nunca se toca desde afuera. `sharedDbName` se extrajo a
+una variable explícita al inicio de la prueba (antes, `InMemoryDbContextFactory.Create()`
+generaba un nombre aleatorio interno sin forma de recuperarlo para el
+segundo contexto).
+
+**Nota aparte, no pedida pero la dejo documentada**: al sincronizar tu ZIP
+contra mi copia de trabajo antes de aplicar estos 2 fixes, noté que
+`ThrowingDbContextDecorator.cs` (el de Bloque 2, reutilizado en varias
+pruebas) le faltaban los `DbSet<Profile>`/`DbSet<Goal>`/
+`DbSet<OnboardingSurvey>`/`DbSet<Measurement>`/`DbSet<SyncOperation>` que
+agregué a `IWellSenseDbContext` en los Bloques 3 y 4 — ya venía corregido en
+el ZIP que me mandaste (no sé si lo corrigiste tú o se corrigió solo al
+compilar y ver el error, pero de cualquier forma ya estaba resuelto ahí, lo
+sincronicé sin cambios). Es un blind spot real de mis propios chequeos
+automatizados: verifico usings, colisiones de namespace y balance de
+llaves/paréntesis, pero NO verifico que todos los implementadores de una
+interfaz tengan sus miembros completos cuando la interfaz crece en un
+bloque posterior. Lo anoto como mejora pendiente de mi propio proceso, no
+del código.
+
+---
+
 ## 0. Aviso operativo (se mantiene)
 
 Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude

@@ -12,9 +12,15 @@ namespace WellSense.Tests.Integration;
 /// era el riesgo abierto #2 del HANDOFF de Bloque 2. Ambas rutas comparten el
 /// mismo factory/host (buckets de conteo distintos por patrón de endpoint, así
 /// que no se contaminan entre sí).
+///
+/// Usa <see cref="RateLimitedWebApplicationFactory"/> (no la base
+/// <see cref="CustomWebApplicationFactory"/>) — es la ÚNICA clase de prueba que
+/// necesita el rate limiting real activo. El resto de las clases de integración usan
+/// la factory base con el límite desactivado, precisamente para no contaminarse entre
+/// pruebas de la misma clase (ver HANDOFF).
 /// </summary>
-public class RateLimitingEndpointTests(CustomWebApplicationFactory factory)
-    : IClassFixture<CustomWebApplicationFactory>
+public class RateLimitingEndpointTests(RateLimitedWebApplicationFactory factory)
+    : IClassFixture<RateLimitedWebApplicationFactory>
 {
     [Fact]
     public async Task Login_beyond_configured_limit_returns_429()

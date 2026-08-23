@@ -170,7 +170,8 @@ public class SyncMeasurementsCommandHandlerTests
     [Fact]
     public async Task Concurrent_race_on_same_request_id_returns_the_winning_result_instead_of_throwing()
     {
-        using var inMemory = InMemoryDbContextFactory.Create();
+        var sharedDbName = $"race-test-{Guid.NewGuid()}";
+        using var inMemory = InMemoryDbContextFactory.Create(sharedDbName);
         var clock = new FixedClock(DateTimeOffset.UtcNow);
         var userId = Guid.NewGuid();
         var device = SeedActiveDevice(inMemory, userId, clock);
@@ -190,8 +191,19 @@ public class SyncMeasurementsCommandHandlerTests
         };
         var throwingDb = new ThrowingDbContextDecoratorWithSideEffect(inMemory, () =>
         {
-            inMemory.SyncOperations.Add(winningOperation);
-            inMemory.SaveChanges();
+            // Crítico: esto NO debe usar `inMemory` (la misma instancia/DbContext que ya
+            // está usando el handler bajo prueba) — el proveedor InMemory de EF permite
+            // que varios DbContext independientes compartan el mismo store con solo
+            // apuntar al mismo nombre de base (`sharedDbName`). Si en cambio se llamara
+            // `inMemory.SaveChanges()` aquí, ese SaveChanges confirmaría de paso TODO lo
+            // que el handler ya había agregado a SU PROPIO change tracker en este mismo
+            // Handle() (su propia SyncOperation "perdedora", con AcceptedCount=1) — no
+            // solo la fila ganadora. El resultado quedaría contaminado por cuál de las
+            // dos filas encuentra primero el FirstOrDefaultAsync sin ORDER BY, en vez de
+            // reflejar de verdad "otro proceso, aislado, que ganó la carrera".
+            using var otherProcessDb = InMemoryDbContextFactory.Create(sharedDbName);
+            otherProcessDb.SyncOperations.Add(winningOperation);
+            otherProcessDb.SaveChanges();
         });
 
         var handler = new SyncMeasurementsCommandHandler(throwingDb, new ControllableViolationDetector(alwaysReturn: true), clock);
@@ -199,8 +211,8 @@ public class SyncMeasurementsCommandHandlerTests
         var result = await handler.Handle(new SyncMeasurementsCommand(
             userId, device.Id, "raced-request", [new MeasurementItem(Guid.NewGuid(), "STEPS", 1, "steps", clock.UtcNow)]), default);
 
-        result.AcceptedCount.Should().Be(7); // el resultado de la request que SÍ ganó, no un error
-        inMemory.SyncOperations.Should().HaveCount(1); // nunca se insertó una segunda fila
+        result.AcceptedCount.Should().Be(7); // el resultado de la request que SÍ ganó, no la perdedora (1) ni un error
+        inMemory.SyncOperations.Should().HaveCount(1); // nunca se insertó una segunda fila — la "perdedora" del handler nunca se confirmó
     }
 }
 
