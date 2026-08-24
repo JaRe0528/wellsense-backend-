@@ -276,3 +276,81 @@ este bloque):
 
 Quedo a la espera de tu luz verde (o correcciones) antes del siguiente
 bloque.
+
+---
+
+## 9. Nota de fix post-entrega — `dotnet test` real corrido, 22 fallos por un solo bug en el fixture de pruebas
+
+Corrí `dotnet build && dotnet test` con acceso real a NuGet (§0/§7.5
+quedan resueltos: la solución sí compila y las 78 pruebas que no
+dependían de esto ya pasaban). De 100 pruebas, 22 fallaban — todas por la
+MISMA causa raíz, no 22 bugs distintos.
+
+**Síntoma**: cualquier endpoint que tocara la base (`/auth/register`,
+`/memberships/plans`, etc.) devolvía 500, con este error de EF Core en el
+log:
+
+```
+InvalidOperationException: A call was made to 'ConfigureWarnings' that
+changed an option that must be constant within a service provider, but
+Entity Framework is not building its own internal service provider...
+```
+
+De ahí en cascada, cualquier prueba que dependiera de un `/register`
+exitoso (la enorme mayoría) fallaba con `KeyNotFoundException` al buscar
+el email en `CapturedEmails` — el registro nunca llegaba a completarse.
+
+**Causa raíz**: el bloque de siembra de `MembershipPlans` agregado en este
+bloque (en `CustomWebApplicationFactory.ConfigureTestServices`) creaba su
+propio `WellSenseDbContext` armando un `DbContextOptionsBuilder<WellSenseDbContext>()`
+a mano:
+
+```csharp
+using (var seedContext = new WellSenseDbContext(new DbContextOptionsBuilder<WellSenseDbContext>()
+    .UseInMemoryDatabase(DbName)
+    .UseInternalServiceProvider(inMemoryServiceProvider)
+    .Options))
+```
+
+Aunque apuntaba al mismo `DbName` y al mismo `inMemoryServiceProvider` que
+usa la app, este builder se construyó **por fuera** de
+`services.AddDbContext<WellSenseDbContext>(...)`. `AddDbContext` le agrega
+a las opciones cosas adicionales (en particular, el `ApplicationServiceProvider`
+real de la app) que un builder armado a mano nunca recibe. Como ambos
+`DbContextOptions` (el de la app y el del seed) comparten el MISMO
+`ServiceProvider` interno de InMemory, EF exige que ciertas opciones sean
+idénticas en todo uso de ese proveedor compartido — la discrepancia
+disparaba la excepción de arriba en la primera consulta real a la base
+(`db.Users` dentro de `RegisterCommandHandler`, `db.MembershipPlans`
+dentro de `ListPlansQueryHandler`, etc.), tumbando el endpoint completo.
+
+**Fix aplicado**: en vez de armar un `DbContextOptionsBuilder` paralelo,
+mover la siembra a un override de `CreateHost(IHostBuilder builder)` —
+punto de extensión estándar de `WebApplicationFactory` pensado exactamente
+para esto. Ahí se resuelve un `WellSenseDbContext` real desde
+`host.Services.CreateScope()` (el contenedor de DI ya construido), la
+misma tubería que usa cualquier request real, así que comparte
+exactamente la misma configuración sin builders duplicados:
+
+```csharp
+protected override IHost CreateHost(IHostBuilder builder)
+{
+    var host = base.CreateHost(builder);
+
+    using var scope = host.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<WellSenseDbContext>();
+    if (!db.MembershipPlans.Any())
+    {
+        db.MembershipPlans.AddRange(/* los mismos 4 planes de antes */);
+        db.SaveChanges();
+    }
+
+    return host;
+}
+```
+
+Solo se tocó `tests/WellSense.Tests/Integration/CustomWebApplicationFactory.cs`
+— nada de `Program.cs`, de los handlers, ni de las pruebas mismas. §7.5 y
+§8 (última fila del checklist) quedan resueltos con este fix; el resto de
+los riesgos abiertos (§7.1–§7.4) siguen en pie tal como se documentaron
+arriba.

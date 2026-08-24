@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using WellSense.Application.Common.Interfaces;
 using WellSense.Domain.Billing;
 using WellSense.Infrastructure.Persistence;
@@ -99,29 +100,6 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
                 options.UseInternalServiceProvider(inMemoryServiceProvider);
             });
 
-            // Semilla del catálogo de planes (Bloque 6): la migración 012 real inserta
-            // los 4 planes en Postgres vía el propio DDL, pero un InMemory store nuevo
-            // arranca vacío — sin esto, cualquier prueba de integración que toque
-            // /memberships/* fallaría por no encontrar ningún MembershipPlan. Se siembra
-            // aquí, contra el mismo ServiceProvider/DbName que usará la app (mismo
-            // mecanismo de "varios DbContext comparten un store InMemory por nombre" ya
-            // usado en el Bloque 5 para simular la carrera de sync).
-            using (var seedContext = new WellSenseDbContext(new DbContextOptionsBuilder<WellSenseDbContext>()
-                .UseInMemoryDatabase(DbName)
-                .UseInternalServiceProvider(inMemoryServiceProvider)
-                .Options))
-            {
-                if (!seedContext.MembershipPlans.Any())
-                {
-                    seedContext.MembershipPlans.AddRange(
-                        new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Free, Name = "Free", PriceCents = 0, Currency = "MXN" },
-                        new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Basic, Name = "Basic", PriceCents = 9900, Currency = "MXN" },
-                        new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Pro, Name = "Pro", PriceCents = 19900, Currency = "MXN" },
-                        new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Professional, Name = "Professional", PriceCents = 39900, Currency = "MXN" });
-                    seedContext.SaveChanges();
-                }
-            }
-
             // Reemplaza el envío de email por un espía para poder leer el token de
             // verificación/reset en las pruebas (el flujo real solo lo loguea).
             services.RemoveAll<IEmailSender>();
@@ -135,6 +113,49 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
             services.RemoveAll<IPaymentGateway>();
             services.AddSingleton<IPaymentGateway>(PaymentGateway);
         });
+    }
+
+    /// <summary>
+    /// Semilla del catálogo de planes (Bloque 6): la migración 012 real inserta los 4
+    /// planes en Postgres vía el propio DDL, pero un InMemory store nuevo arranca
+    /// vacío — sin esto, cualquier prueba de integración que toque /memberships/*
+    /// fallaría por no encontrar ningún MembershipPlan.
+    ///
+    /// IMPORTANTE: la siembra se hace acá, con un WellSenseDbContext resuelto desde
+    /// `host.Services` (el contenedor de DI YA construido), y no armando un
+    /// `DbContextOptionsBuilder<WellSenseDbContext>()` a mano como se hacía antes
+    /// dentro de `ConfigureTestServices`. `AddDbContext` le agrega a las opciones del
+    /// contexto cosas que un builder armado a mano nunca recibe (en particular, el
+    /// `ApplicationServiceProvider` real de la app) — y como ambos contextos comparten
+    /// el MISMO `ServiceProvider` interno de InMemory (`UseInternalServiceProvider`),
+    /// EF exige que esas opciones sean idénticas en todo uso de ese proveedor
+    /// compartido. La discrepancia disparaba
+    /// `InvalidOperationException: A call was made to 'ConfigureWarnings' that changed
+    /// an option that must be constant within a service provider` en la PRIMERA
+    /// consulta real a la base (ej. `db.Users` en `/register`), tumbando con 500
+    /// absolutamente cualquier endpoint que tocara la base — de ahí en cascada las
+    /// `KeyNotFoundException` en `CapturedEmails` de las pruebas que dependían de un
+    /// `/register` exitoso. Resolviendo el contexto de siembra desde `host.Services`
+    /// (la misma tubería de DI que usa cada request real) se garantiza que comparte
+    /// exactamente la misma configuración, sin builders paralelos.
+    /// </summary>
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        var host = base.CreateHost(builder);
+
+        using var scope = host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WellSenseDbContext>();
+        if (!db.MembershipPlans.Any())
+        {
+            db.MembershipPlans.AddRange(
+                new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Free, Name = "Free", PriceCents = 0, Currency = "MXN" },
+                new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Basic, Name = "Basic", PriceCents = 9900, Currency = "MXN" },
+                new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Pro, Name = "Pro", PriceCents = 19900, Currency = "MXN" },
+                new MembershipPlan { Id = Guid.NewGuid(), Code = PlanCode.Professional, Name = "Professional", PriceCents = 39900, Currency = "MXN" });
+            db.SaveChanges();
+        }
+
+        return host;
     }
 }
 
