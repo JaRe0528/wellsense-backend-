@@ -6,15 +6,16 @@ using WellSense.Domain.Identity;
 using WellSense.Domain.Measurements;
 using WellSense.Domain.Notifications;
 using WellSense.Domain.Profiles;
+using WellSense.Domain.Wellness;
 
 namespace WellSense.Application.Common.Interfaces;
 
 /// <summary>
 /// Abstracción del DbContext que puede usar Application sin depender de Npgsql/EF.Design.
 /// Expone los DbSets que Auth (Bloque 2), Users+Profile (Bloque 3),
-/// Devices+Measurements+Sync (Bloque 4), SignalR+FCM (Bloque 5) y Memberships+Payments
-/// (Bloque 6) necesitan; el resto de módulos agregarán los suyos cuando les toque su
-/// bloque.
+/// Devices+Measurements+Sync (Bloque 4), SignalR+FCM (Bloque 5), Memberships+Payments
+/// (Bloque 6) y ML V1/reglas (Bloque 7) necesitan; el resto de módulos agregarán los
+/// suyos cuando les toque su bloque.
 /// </summary>
 public interface IWellSenseDbContext
 {
@@ -30,11 +31,16 @@ public interface IWellSenseDbContext
     DbSet<OnboardingSurvey> OnboardingSurveys { get; }
     DbSet<Measurement> Measurements { get; }
     DbSet<SyncOperation> SyncOperations { get; }
+    DbSet<SleepSession> SleepSessions { get; }
+    DbSet<ActivitySession> ActivitySessions { get; }
     DbSet<NotificationToken> NotificationTokens { get; }
     DbSet<Notification> Notifications { get; }
     DbSet<MembershipPlan> MembershipPlans { get; }
     DbSet<Subscription> Subscriptions { get; }
     DbSet<Payment> Payments { get; }
+    DbSet<WellnessScore> WellnessScores { get; }
+    DbSet<StressScore> StressScores { get; }
+    DbSet<MlPrediction> MlPredictions { get; }
 
     /// <summary>
     /// Una sola llamada = una sola transacción implícita de EF/Postgres. Los handlers

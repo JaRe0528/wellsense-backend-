@@ -1,8 +1,9 @@
-# HANDOFF.md — Chat Backend (.NET), Bloque 6: Memberships + Payments
+# HANDOFF.md — Chat Backend (.NET), Bloque 7: ML V1 (reglas)
 
-> Entregable del **Bloque 6**. Requiere Bloque 5 cerrado (ya lo está, 80/80
-> reales). Cubre el catálogo de planes que la Web ya está esperando,
-> contratar/cambiar de plan con cobro real, y el historial de pagos.
+> Entregable del **Bloque 7**. Requiere Bloque 6 cerrado (ya lo está,
+> 100/100 reales). El endpoint que consume Measurements/Sleep/Activity y
+> produce WellnessScore/StressScore, usando por primera vez de verdad la
+> decisión de zona horaria del Bloque 3.
 
 ---
 
@@ -11,346 +12,259 @@
 Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude
 correr `dotnet build`/`dotnet test` aquí. Lo que sí hice en este bloque:
 
-- **Repetí el mismo bug de Bloque 4 en dos columnas más** (`subscriptions.status`,
-  `payments.status`), lo encontré ANTES de escribir lógica de negocio encima,
-  y lo demostré con `INSERT`s reales contra Postgres — ver §2.
-- **Demostré empíricamente, no solo razoné, por qué el orden de escritura
-  de `SubscribeToPlanCommandHandler` tenía que partirse en dos llamadas**:
-  corrí la secuencia "insertar antes de cancelar" dentro de una transacción
-  real y confirmé que Postgres la rechaza — ver §3.
-- **Encontré y corregí yo mismo un bug real en mi primer borrador** antes de
-  que llegara a ningún lado: el handler de suscripción llamaba al gateway
-  de pago DOS veces (hubiera cobrado la tarjeta dos veces) — ver §3.
-- Actualicé `IWellSenseDbContext` y sus 3 implementadores en el mismo cambio,
-  antes de escribir cualquier lógica — sin repetir el blindspot que se
-  quedó documentado tras Bloque 4.
-- Los 3 barridos automatizados de siempre, limpios sobre las ~35 rutas
-  nuevas/tocadas de este bloque.
+- **Cerré el último de los 4 bugs de `HasConversion<string>()` que había
+  quedado flagueado desde el HANDOFF de Bloque 4** (`StressScore.Level`) —
+  encontrado y corregido antes de escribir lógica encima, demostrado contra
+  Postgres real, mismo patrón que las 3 veces anteriores.
+- **Apliqué la regla general del Bloque 6** (`IWellSenseDbContext` y sus 3
+  implementadores actualizados en el mismo cambio, antes de cualquier
+  lógica) y la regla de siembra de pruebas ya corregida (no fue necesario
+  sembrar nada nuevo en este bloque, pero confirmé que no rompí el patrón
+  existente).
+- **Encontré y corregí una inconsistencia real yo mismo, en mi propio
+  primer borrador**, antes de que llegara a ningún lado: `GET
+  /wellness/me` sin fecha explícita iba a usar "hoy" en UTC como default,
+  mientras que `POST /wellness/compute` sin fecha ya usaba "hoy" en la
+  zona horaria del usuario — exactamente la inconsistencia que este bloque
+  existe para evitar. Corregido moviendo la resolución de "hoy" al handler
+  (no al controller), ver §3.
+- **Diseñé el motor de puntuación como funciones puras**, separadas del
+  handler que hace I/O — permite probar la lógica de reglas exhaustivamente
+  sin EF ni mocks, y deja un punto de reemplazo limpio para cuando el
+  servicio de ML real (Python/FastAPI) entre en un bloque futuro.
+- Validé el flujo completo contra Postgres real: inserciones válidas y el
+  `UNIQUE(user_id, date)` rechazando un segundo insert directo — confirma
+  por qué el handler tiene que ser buscar-y-actualizar, no insertar a
+  ciegas.
+- Los 3 barridos automatizados de siempre, limpios sobre las ~25 rutas
+  nuevas de este bloque.
 
 ---
 
-## 1. Decisión nueva de este bloque: Stripe como pasarela de pago
+## 1. El motor de reglas — qué calcula y por qué
 
-`01-ARQUITECTURA-Y-STACK.md` nunca decidió una pasarela de pago — no estaba
-en el stack original. Elegí **Stripe**, justificado en el propio código
-(`StripePaymentGateway.cs`): soporta MXN nativamente, opera en México, y su
-modelo de tokenización (Stripe.js en el cliente, el backend nunca toca el
-número de tarjeta) es exactamente el requisito de PCI-DSS que
-`IPaymentGateway` ya exige por diseño. **Es una decisión nueva de este
-bloque, no del documento maestro — si el chat de arquitectura/orquestador
-ya tenía otra pasarela en mente (Conekta, Mercado Pago), avísenme y la
-cambio; el único punto de acoplamiento real es `StripePaymentGateway.cs`,
-todo lo demás (`IPaymentGateway`, los handlers, los endpoints) es agnóstico
-de cuál pasarela hay detrás.**
+**Decisión de alcance explícita**: wellness score usa **sueño + pasos**,
+NO frecuencia cardíaca — una "frecuencia cardíaca en reposo" confiable
+necesita aislar períodos de baja actividad, un problema en sí mismo que
+este bloque no resuelve. El stress score sí usa frecuencia cardíaca (banda
+de referencia genérica, sin personalización todavía) porque ahí es donde
+más aporta como señal simple para un "V1 de reglas".
 
-Implementé la integración real contra el SDK oficial `Stripe.net`, no un
-stub — mismo criterio que FCM (Bloque 5). **Aviso de honestidad**: la forma
-exacta de la API de Stripe.net (`PaymentIntentCreateOptions`, `Expand`,
-`LastPaymentError`) la escribí de memoria con mi mejor confianza, pero no
-la pude compilar contra el paquete real — es la pieza de este bloque con
-más probabilidad de necesitar un ajuste una vez que corran `dotnet build`
-con una cuenta de Stripe sandbox de verdad. Si algo de la forma exacta del
-SDK no compila, es un ajuste de esa clase puntual, no del diseño alrededor.
+- **Componente de sueño** (0-100): ideal 7-9h → 100, se degrada
+  gradualmente fuera de ese rango, más pronunciado hacia abajo (dormir
+  poco pesa más que dormir de más).
+- **Componente de actividad** (0-100): 10,000 pasos/día → 100, escala
+  lineal.
+- **Wellness score** = promedio de los componentes CON datos — si falta
+  uno, no se penaliza como si fuera cero, simplemente se excluye del
+  promedio.
+- **Componente de estrés por frecuencia cardíaca**: banda genérica
+  (≤60bpm → 0, ≥100bpm → 100), interpolación lineal entre bandas.
+- **Componente de estrés por sueño**: inverso del componente de sueño del
+  wellness (dormir bien reduce estrés).
+- **Stress score** = promedio de los componentes de estrés disponibles.
+  **Nivel** (`LOW`/`MEDIUM`/`HIGH`) = corte simple en tercios (0-33 /
+  34-66 / 67-100) — transparente y fácil de explicarle al usuario.
+  **Confianza** = proporción de componentes con datos reales (1.0 si
+  ambos, 0.5 si solo uno).
+- **Sin ningún dato de ningún tipo ese día** → no se inserta nada, 400
+  `INSUFFICIENT_DATA` — nunca se inventa un puntaje "neutral" de relleno.
+
+Cada cálculo se registra en `ml_predictions` (`model_version: "rules-v1"`,
+`type: "daily_scores"`) con el input crudo y el output calculado — para
+poder explicar "por qué mi puntaje de hoy es X" y, cuando llegue el
+servicio de ML real, tener trazabilidad de qué generó cada puntaje
+histórico (reglas vs. modelo entrenado).
 
 ---
 
-## 2. El mismo bug de Bloque 4, ahora en `subscriptions`/`payments`
+## 2. La zona horaria del Bloque 3, aplicada por primera vez
 
-Ya había flagueado en el HANDOFF de Bloque 4 que `Subscription.Status` y
-`Payment.Status` seguían usando `HasConversion<string>()` genérico
-(`Enum.ToString()` → `"Active"`, `"Approved"`), mientras el `CHECK` de la BD
-exige `'ACTIVE'`, `'APPROVED'` (mayúsculas). Este bloque escribe a esas
-columnas por primera vez, así que lo corregí antes de tocar nada más —
-mismo patrón que `MembershipPlanConfiguration.Code` (que sí ya estaba bien
-desde Bloque 1: `v.ToString().ToUpperInvariant()` / `Enum.Parse(...,
-ignoreCase: true)`, más simple que el switch completo que usé para
-`Measurement.Type` porque aquí los nombres del enum SÍ coinciden con el
-`CHECK` salvo por mayúsculas).
+`LocalDayRange` (nuevo, `Application/Common/`) es la implementación
+directa de esa decisión: cualquier código que agrupe measurements/sleep/
+activity "por día" pasa por acá, nunca trunca `recorded_at`/`start_at` a
+fecha UTC directamente.
 
-Demostrado contra Postgres real, mismo patrón que Bloque 4:
+- `ForLocalDate(fecha, timezone)` → rango UTC `[inicio, fin)` que
+  corresponde a la medianoche-a-medianoche LOCAL de esa fecha.
+- `TodayInTimezone(utcNow, timezone)` → la fecha calendario local
+  correspondiente a un instante UTC, para resolver "hoy" por defecto.
+- `TimeZoneInfo.ConvertTimeToUtc` resuelve DST automáticamente contra la
+  tzdata (misma base que usa Postgres) — no hay cálculo de horario de
+  verano a mano.
+- Si `profiles.timezone` es inválido (no debería pasar, `UpsertMyProfile`
+  ya lo valida desde Bloque 3, pero perfiles viejos o datos corruptos son
+  un caso borde real), cae a UTC en vez de tumbar el cálculo completo.
 
+Probado explícitamente con el caso que motivó la decisión: una medición
+tomada a las 22:30 hora Ciudad de México del día 23, que en UTC ya es
+04:30 del día 24 — sin la conversión de zona horaria, un cálculo ingenuo
+por fecha UTC la habría atribuido al día equivocado
+(`ComputeDailyScoresCommandHandlerTests.Uses_the_users_local_timezone_not_utc...`).
+
+---
+
+## 3. La inconsistencia que encontré en mi propio primer borrador
+
+Al escribir `GET /wellness/me`, mi primer borrador del controller resolvía
+el default de fecha así:
+
+```csharp
+var targetDate = date ?? DateOnly.FromDateTime(DateTime.UtcNow); // ¡mal!
 ```
---- WRONG format ('Active') ---
-ERROR:  new row for relation "subscriptions" violates check constraint "subscriptions_status_check"
---- CORRECT format ('ACTIVE') ---
-INSERT 0 1
---- mismo resultado para payments.status ('Approved' falla, 'APPROVED' pasa) ---
-```
+
+Esto habría hecho que `GET /wellness/me` (sin fecha) y `POST
+/wellness/compute` (sin fecha) usaran "hoy" calculado de formas
+DISTINTAS para el mismo usuario — exactamente el tipo de bug silencioso
+que la decisión del Bloque 3 existe para evitar, y en el peor lugar
+posible: el propio endpoint de lectura de los puntajes.
+
+Lo corregí moviendo la resolución de "hoy" al **handler**
+(`GetMyDailyScoresQueryHandler`), no al controller — ahí sí tiene acceso al
+perfil del usuario y usa el mismo `LocalDayRange.TodayInTimezone` que
+`ComputeDailyScoresCommandHandler`. El controller ahora solo pasa
+`date: DateOnly?` tal cual, nunca decide un default por su cuenta. Deja
+como regla implícita para bloques futuros: la resolución de "hoy" nunca
+debe vivir en la capa de Api.
 
 ---
 
-## 3. El diseño de `SubscribeToPlanCommandHandler` — dos hallazgos propios
+## 4. Endpoints listos
 
-**Hallazgo 1 — mi primer borrador cobraba dos veces.** Al escribir el
-camino "plan pago aprobado", tenía una segunda llamada a
-`paymentGateway.ChargeAsync(...)` más abajo en el mismo método (residuo de
-una reestructuración a medio hacer). Lo atrapé releyendo el handler antes
-de darlo por terminado — el resultado del ÚNICO cobro real se guarda en una
-variable (`charge`) y se reutiliza; el gateway se llama **exactamente una
-vez** por invocación, verificado explícitamente en
-`SubscribeToPlanCommandHandlerTests` (`gateway.Charges.Should().ContainSingle()`).
+**Wellness** (`api/v1/wellness`, todos requieren Bearer):
 
-**Hallazgo 2 — por qué "cancelar la vieja + crear la nueva" no puede ir en
-un solo `SaveChanges`.** `ux_subscriptions_one_active_per_user` es un
-índice único **no diferible** (se evalúa por sentencia, no al final de la
-transacción). No hay garantía documentada de que EF Core emita el UPDATE de
-la fila vieja (Active→Canceled) antes que el INSERT de la fila nueva
-(Active) dentro de una misma llamada a `SaveChanges`, cuando son dos filas
-del mismo tipo sin relación de FK entre sí. Lo demostré, no solo lo razoné
-— corrí la secuencia contraria a mano dentro de una transacción real:
+| Método | Ruta | Request | Response | Errores |
+|---|---|---|---|---|
+| POST | `/compute` | `{date?}` | 200 `{date, wellness?: {score}, stress?: {score, level, confidence}}` | 400 `INSUFFICIENT_DATA` / validación (fecha futura) |
+| GET | `/me` | query `?date=` (opcional) | 200 `{date, wellnessScore?, stressScore?, stressLevel?, stressConfidence?}` — nunca 404 | — |
+| GET | `/me/history` | query `?days=` (default 7, tope 90) | 200 `[{date, wellnessScore?, stressScore?, stressLevel?}]` | — |
 
-```sql
-BEGIN;
-INSERT INTO subscriptions(...) VALUES (..., 'ACTIVE');  -- la nueva, ANTES
-UPDATE subscriptions SET status='CANCELED' WHERE id=...;  -- la vieja, DESPUÉS
-COMMIT;
-```
-```
-ERROR:  duplicate key value violates unique constraint "ux_subscriptions_one_active_per_user"
-```
-
-Por eso el handler parte la escritura en dos llamadas secuenciales
-explícitas: primero confirma que la vieja ya no está activa (sola), después
-crea la nueva (junto con el `Payment`, si hubo cobro — esa combinación SÍ
-es segura en una sola llamada porque hay una FK real
-`Payment.SubscriptionId → Subscription.Id`, y para relaciones de FK EF Core
-sí garantiza el orden). **Costo aceptado**: un crash exactamente entre esas
-dos llamadas dejaría al usuario sin suscripción activa por un instante —
-se autorrepara solo en el siguiente `GetMyMembership` (lazy-crea FREE), a
-costa de perder momentáneamente el plan pago hasta que reintente. Ventana
-extremadamente estrecha (dos escrituras casi instantáneas), documentada
-como riesgo en vez de resuelta con una transacción distribuida que nadie
-pidió para este bloque.
+`stressLevel` usa `LOW`/`MEDIUM`/`HIGH`, mismo vocabulario que el `CHECK`
+de la BD.
 
 ---
 
-## 4. Qué quedó armado
+## 5. Decisiones tomadas en este bloque
 
-### Endpoints
-
-**Memberships** (`api/v1/memberships`):
-
-| Método | Ruta | Auth | Request | Response | Errores |
-|---|---|---|---|---|---|
-| GET | `/plans` | No | — | 200 `[{id, code, name, priceCents, currency}]` | — |
-| GET | `/me` | Sí | — | 200 `{subscriptionId, planCode, planName, status, startedAt, endsAt}` — nunca 404 | — |
-| POST | `/subscribe` | Sí | `{planCode, paymentMethodToken?, idempotencyKey}` | 200 igual forma que `/me` + `paymentId?` | 400 validación/`PAYMENT_METHOD_REQUIRED`, 402 `PAYMENT_DECLINED`, 404 `PLAN_NOT_FOUND`, 503 `PAYMENT_GATEWAY_NOT_CONFIGURED` |
-| POST | `/cancel` | Sí | — | 204 | — |
-
-**Payments** (`api/v1/payments`):
-
-| Método | Ruta | Auth | Response |
-|---|---|---|---|
-| GET | `/me` | Sí | 200 `[{id, planCode, amountCents, currency, status, cardBrand, cardLast4, createdAt}]` |
-
-`planCode`/`status` usan el mismo vocabulario que el `CHECK` de la BD
-(`FREE`/`BASIC`/`PRO`/`PROFESSIONAL`, `ACTIVE`/`CANCELED`/`EXPIRED`,
-`APPROVED`/`DECLINED`) en ambos sentidos.
-
-### Decisiones tomadas
-
-- **`GET /plans` es público** (`AllowAnonymous`) — es contenido de una
-  página de precios normal, no información de cuenta de nadie. La Web
-  puede mostrarlo sin sesión.
-- **`GET /me` nunca da 404** — mismo patrón get-or-create perezoso que
-  `GetMyProfile` (Bloque 3): todo usuario "tiene" una membresía siempre; si
-  nunca contrató nada, se le crea una suscripción FREE en el primer
-  llamado, sin tocar `RegisterCommandHandler` (Bloque 2, cerrado).
-- **"Cancelar" siempre significa "volver a FREE"** — no existe en este
-  modelo un estado "sin ninguna suscripción activa". `CancelSubscriptionCommandHandler`
-  reutiliza `SubscribeToPlanCommand` vía MediatR en vez de duplicar la
-  lógica de reemplazo.
-- **El monto a cobrar SIEMPRE lo decide el servidor** a partir de
-  `membership_plans.price_cents`/`currency` — el cliente nunca manda un
-  monto. Aceptar un monto del cliente permitiría pagar $1 por un plan de
-  $399 con un cliente modificado.
-- **`idempotencyKey` es del cliente**, mismo idioma que `requestId` en
-  `/sync` (Bloque 4) — se pasa directo al `RequestOptions.IdempotencyKey`
-  de Stripe, que deduplica del lado de la pasarela ante reintentos de red.
-  No se agregó una columna nueva para rastrearlo del lado nuestro —
-  suficiente con lo que Stripe ya garantiza.
-- **Un plan FREE nunca genera fila en `payments`** — el `CHECK
-  (amount_cents > 0)` de la BD literalmente no lo permite; confirmado con
-  el mismo diseño (`if (plan.PriceCents > 0)` antes de tocar `payments` en
-  absoluto).
-- **Una suscripción paga dura 1 mes desde que se activa**
-  (`EndsAt = StartedAt.AddMonths(1)`) — decisión explícita, documentada en
-  el propio handler. **Este bloque NO implementa el job que renueva o
-  degrada a FREE cuando `EndsAt` ya pasó** — mismo tipo de alcance que la
-  decisión de zona horaria del Bloque 3: se deja la decisión y el dato
-  listo, no se construye el job que nadie pidió todavía.
-- **Se preserva el historial de suscripciones** (cada cambio de plan crea
-  una fila nueva, nunca sobreescribe la anterior) en vez de reutilizar la
-  misma fila — consistente con lo que sugiere el propio índice único
-  parcial de la BD (uno ACTIVO a la vez, no uno solo para siempre).
+- **`/compute` es explícito, no automático** — el encargo pedía "el
+  endpoint que consuma...produzca...", así que este bloque entrega
+  exactamente eso. Auto-disparar el cálculo después de cada `/sync`
+  (parecido al evento de SignalR del Bloque 5) es un paso natural
+  siguiente, pero no lo hice sin que se pida explícito — hubiera sido
+  otra modificación a `SyncMeasurementsCommandHandler` (ya van dos
+  bloques tocándolo) sin encargo directo para ésta.
+- **Recalculable, no de una sola vez**: si ya existe un puntaje para
+  `(usuario, fecha)`, `/compute` lo actualiza en vez de fallar o duplicar
+  — necesario porque el sync puede traer datos tardíos de un día ya
+  procesado.
+- **Sueño se atribuye al día en que TERMINA, no en el que empieza** — una
+  sesión de sueño de las 23:00 del día N a las 07:00 del día N+1 cuenta
+  para el día N+1 (el día que la persona vivió con ese descanso), no para
+  el N.
+- **Un componente sin datos se excluye del promedio, nunca se trata como
+  cero** — dormir 0 horas registradas de verdad es distinto de "no hay
+  ninguna sesión de sueño sincronizada todavía"; solo el primer caso debe
+  bajar el puntaje.
+- **`ml_predictions` se llena en cada cálculo exitoso** (parcial o
+  completo) — decisión de aprovechar una tabla que ya existía desde
+  Bloque 1 exactamente para esto, dando trazabilidad de qué datos
+  produjeron cada puntaje.
 
 ---
 
-## 5. Qué pruebas existen
+## 6. Qué pruebas existen
 
-Unitarias (EF InMemory):
-- `Memberships/SubscribeToPlanCommandHandlerTests` (la más importante): FREE
-  nunca llama al gateway ni crea `Payment`; plan pago sin token lanza
-  `PAYMENT_METHOD_REQUIRED`; aprobado llama al gateway **exactamente una
-  vez** y liga el `Payment` a la nueva suscripción; rechazado crea el
-  `Payment` sin ligar y nunca toca `subscriptions`; cambiar de plan
-  desactiva el anterior y deja **solo uno** activo conservando el
-  historial; código de plan inexistente lanza `PLAN_NOT_FOUND`.
-- `Memberships/ListPlansAndGetMyMembershipTests`: catálogo ordenado por
-  precio; lazy-creación de FREE en el primer llamado; el segundo llamado
-  no duplica.
-- `Memberships/CancelSubscriptionCommandHandlerTests`: verifica tanto QUÉ
-  comando manda (`SubscribeToPlanCommand` apuntando a FREE) como el
-  resultado real en BD tras pasar por el handler real, sin volver a cobrar.
-- `Payments/ListMyPaymentsQueryHandlerTests`: aislamiento entre usuarios,
-  incluye tanto aprobados como rechazados, orden más-reciente-primero.
+Unitarias, sin EF (funciones puras):
+- `Wellness/DailyScoringRulesTests`: cada regla por separado — rango ideal
+  de sueño, penalización asimétrica (dormir poco pesa más que dormir de
+  más), tope de actividad en 10,000 pasos, promedio que excluye
+  componentes ausentes, bandas de frecuencia cardíaca, corte de nivel en
+  tercios, cálculo de confianza.
+- `Wellness/LocalDayRangeTests`: conversión medianoche-a-medianoche local
+  a rango UTC; **el caso específico de "UTC ya cambió de día, la zona
+  local todavía no"**; fallback seguro a UTC ante una zona horaria
+  inválida.
 
-Integración HTTP end-to-end (`CustomWebApplicationFactory`, extendida en
-este bloque):
-- Se agregó **semilla de los 4 planes** al store InMemory de pruebas (la
-  migración 012 real los inserta en Postgres vía DDL; un InMemory nuevo
-  arranca vacío — sin esto, cualquier prueba de `/memberships/*` fallaría).
-- Se agregó `FakePaymentGateway` como reemplazo de `IPaymentGateway`
-  (expuesto como propiedad pública de la factory, igual que
-  `CapturedEmails`) — sin esto, cualquier intento de cobro real recibiría
-  503 `PAYMENT_GATEWAY_NOT_CONFIGURED` en pruebas.
-- `Integration/MembershipsFlowEndpointTests`: catálogo sin auth, `/me`
-  lazy-FREE, contratar plan pago aprobado (activa + registra pago), tarjeta
-  rechazada (402, la membresía activa NO cambia), falta el token (400),
-  cancelar vuelve a FREE, `/me` y `/subscribe` sí exigen auth pero
-  `/plans` no.
+Unitarias con EF InMemory:
+- `Wellness/ComputeDailyScoresCommandHandlerTests`: sin datos lanza
+  `INSUFFICIENT_DATA`; solo pasos calcula wellness pero no stress; pasos +
+  sueño + frecuencia cardíaca calculan ambos con confianza 1.0;
+  recalcular el mismo día actualiza en vez de duplicar; **atribución
+  correcta de una medición a la zona horaria local del usuario, no UTC**.
+- `Wellness/GetMyDailyScoresAndHistoryTests`: nulls cuando no hay nada
+  calculado; sin fecha resuelve "hoy" en la zona horaria del usuario
+  (la misma prueba que hubiera fallado con mi borrador con el bug de §3);
+  historial solo trae días con datos reales, aislado por usuario.
+
+Integración HTTP end-to-end (`CustomWebApplicationFactory`):
+`Integration/WellnessFlowEndpointTests` — sincroniza mediciones REALES vía
+`/sync/measurements` (Bloque 4) y confirma que `/wellness/compute` (este
+bloque) las encuentra y calcula un puntaje real — cubre la integración
+entre bloques, no solo este en aislamiento. Más: `/me` antes de tener
+datos no es un error; calcular sin datos da 400; requiere autenticación.
 
 ---
 
-## 6. Qué necesita Web/Android de este bloque
+## 7. Qué necesita Web/Android de este bloque
 
-- **Contratos exactos**: tabla de §4. El monto SIEMPRE lo calcula el
-  servidor — el cliente solo manda `planCode`.
-- **`paymentMethodToken` viene del SDK de Stripe en el cliente** (Stripe.js
-  en Web, el SDK de Stripe para Android/Kotlin) — el backend nunca acepta
-  ni espera datos de tarjeta en claro.
-- **`idempotencyKey` debe generarse una vez por intento de compra y
-  reenviarse igual en reintentos** — mismo patrón que `requestId` en
-  `/sync/measurements` (Bloque 4).
-- **`GET /memberships/plans` es público** — la página de precios puede
-  mostrarse sin que el usuario haya iniciado sesión.
-- **`GET /memberships/me` nunca da 404** — un usuario recién registrado ya
-  tiene "membresía FREE" desde el primer `GET`, sin ningún paso adicional.
+- **Llamar a `POST /wellness/compute` explícitamente** para que un día
+  tenga puntaje — no sucede solo. El momento natural: después de un sync
+  exitoso, o cuando el usuario abre el dashboard.
+- **`GET /wellness/me` nunca da 404** — si los campos vienen `null`, es la
+  señal de "todavía no se ha calculado (o no hay suficientes datos)", no
+  un error.
+- **`POST /wellness/compute` puede dar 400 `INSUFFICIENT_DATA`** — el
+  cliente debe mostrar algo como "sincroniza más datos para ver tu
+  puntaje de hoy", no tratarlo como un error de red.
+- **El "día" siempre se calcula en la zona horaria del perfil del
+  usuario** (Bloque 3) — si el cliente muestra "puntaje de hoy" en su
+  propia UI, debe coincidir con lo que el backend considera "hoy" para
+  ese usuario, no con la fecha del dispositivo si el usuario cambió de
+  huso horario recientemente.
 
 ---
 
-## 7. Riesgos abiertos
+## 8. Riesgos abiertos
 
-1. **Stripe.net sin compilar contra el paquete real** — ver §1, la pieza
-   con más probabilidad de necesitar ajuste de forma (no de diseño) una vez
-   que corran `dotnet build` con acceso real a NuGet.
-2. **Ventana de carrera estrecha en `SubscribeToPlanCommandHandler`** entre
-   sus dos `SaveChanges` secuenciales — ver §3, documentada y aceptada, no
-   resuelta con una transacción distribuida.
-3. **No hay job de renovación/expiración de suscripciones pagas** — `EndsAt`
-   se calcula y se guarda, pero nada actúa sobre él todavía cuando pasa.
-   Candidato natural para un futuro bloque de jobs programados.
-4. **Elección de Stripe pendiente de confirmación** del chat de
-   arquitectura/orquestador — ver §1.
+1. **Es un motor de reglas, no un modelo entrenado** — las bandas de
+   referencia (pasos, frecuencia cardíaca, sueño) son genéricas, iguales
+   para todos los usuarios, no personalizadas. Es exactamente lo que pediste
+   ("ML V1 reglas"), documentado explícitamente como punto de partida, no
+   como resultado final.
+2. **No hay disparo automático tras `/sync`** — ver §5, decisión consciente
+   de no tocar `SyncMeasurementsCommandHandler` una tercera vez sin
+   encargo explícito.
+3. **Los componentes de wellness NUNCA usan frecuencia cardíaca** — decisión
+   de alcance explícita (ver §1), no un descuido.
+4. **`activity_sessions` no participa en el cálculo de pasos** — solo se
+   cuenta (para el log de `ml_predictions`, no para el puntaje) para evitar
+   el riesgo de contar los mismos pasos dos veces si un `activity_session`
+   y measurements de tipo STEPS se solaparan en el tiempo. Si en el futuro
+   se necesita que las sesiones de ejercicio pesen en el wellness score,
+   hay que decidir explícitamente cómo evitar ese doble conteo.
 5. Mismo aviso de siempre: no compilado/probado por mí en mi propio
    entorno — necesito `dotnet build && dotnet test` de su lado antes de
    aprobar.
 
 ---
 
-## 8. Checklist de las 10 capas del DoD
+## 9. Checklist de las 10 capas del DoD
 
-- [x] Validador (FluentValidation) en cada comando
-- [x] Prueba unitaria de cada handler, incluyendo los 2 hallazgos propios
-      (cobro único, orden de escritura) verificados explícitamente
-- [x] Prueba de integración HTTP end-to-end de los 5 endpoints nuevos
-- [x] Documentación de API (Swagger, `[ProducesResponseType]`, incluyendo
-      402/503)
-- [x] Manejo de errores consistente (`PaymentDomainException` nueva,
-      agregada al middleware global)
-- [x] Bug heredado de Bloque 4 encontrado y corregido antes de escribir
-      lógica encima — demostrado contra Postgres real
-- [x] Decisión de diseño (orden de escritura no atómico) validada
-      empíricamente contra Postgres real, no solo razonada
+- [x] Validador (FluentValidation) en el comando de cómputo
+- [x] Prueba unitaria de cada regla de puntuación por separado (funciones
+      puras, sin EF) + de cada handler con EF InMemory
+- [x] Prueba de integración HTTP end-to-end que cruza Sync (Bloque 4) → ML
+      (este bloque), no solo este bloque aislado
+- [x] Documentación de API (Swagger, `[ProducesResponseType]`)
+- [x] Manejo de errores consistente (`MlDomainException` nueva, agregada
+      al middleware global)
+- [x] Bug heredado (el último de los 4 de `HasConversion<string>()`)
+      encontrado y corregido antes de escribir lógica encima — demostrado
+      contra Postgres real
+- [x] Inconsistencia real en mi propio borrador encontrada y corregida
+      antes de compilar — documentada con la misma honestidad que los
+      bugs de bloques anteriores
 - [ ] Compilación y `dotnet test` reales — **pendiente de tu lado**, ver §0
 
 Quedo a la espera de tu luz verde (o correcciones) antes del siguiente
 bloque.
-
----
-
-## 9. Nota de fix post-entrega — `dotnet test` real corrido, 22 fallos por un solo bug en el fixture de pruebas
-
-Corrí `dotnet build && dotnet test` con acceso real a NuGet (§0/§7.5
-quedan resueltos: la solución sí compila y las 78 pruebas que no
-dependían de esto ya pasaban). De 100 pruebas, 22 fallaban — todas por la
-MISMA causa raíz, no 22 bugs distintos.
-
-**Síntoma**: cualquier endpoint que tocara la base (`/auth/register`,
-`/memberships/plans`, etc.) devolvía 500, con este error de EF Core en el
-log:
-
-```
-InvalidOperationException: A call was made to 'ConfigureWarnings' that
-changed an option that must be constant within a service provider, but
-Entity Framework is not building its own internal service provider...
-```
-
-De ahí en cascada, cualquier prueba que dependiera de un `/register`
-exitoso (la enorme mayoría) fallaba con `KeyNotFoundException` al buscar
-el email en `CapturedEmails` — el registro nunca llegaba a completarse.
-
-**Causa raíz**: el bloque de siembra de `MembershipPlans` agregado en este
-bloque (en `CustomWebApplicationFactory.ConfigureTestServices`) creaba su
-propio `WellSenseDbContext` armando un `DbContextOptionsBuilder<WellSenseDbContext>()`
-a mano:
-
-```csharp
-using (var seedContext = new WellSenseDbContext(new DbContextOptionsBuilder<WellSenseDbContext>()
-    .UseInMemoryDatabase(DbName)
-    .UseInternalServiceProvider(inMemoryServiceProvider)
-    .Options))
-```
-
-Aunque apuntaba al mismo `DbName` y al mismo `inMemoryServiceProvider` que
-usa la app, este builder se construyó **por fuera** de
-`services.AddDbContext<WellSenseDbContext>(...)`. `AddDbContext` le agrega
-a las opciones cosas adicionales (en particular, el `ApplicationServiceProvider`
-real de la app) que un builder armado a mano nunca recibe. Como ambos
-`DbContextOptions` (el de la app y el del seed) comparten el MISMO
-`ServiceProvider` interno de InMemory, EF exige que ciertas opciones sean
-idénticas en todo uso de ese proveedor compartido — la discrepancia
-disparaba la excepción de arriba en la primera consulta real a la base
-(`db.Users` dentro de `RegisterCommandHandler`, `db.MembershipPlans`
-dentro de `ListPlansQueryHandler`, etc.), tumbando el endpoint completo.
-
-**Fix aplicado**: en vez de armar un `DbContextOptionsBuilder` paralelo,
-mover la siembra a un override de `CreateHost(IHostBuilder builder)` —
-punto de extensión estándar de `WebApplicationFactory` pensado exactamente
-para esto. Ahí se resuelve un `WellSenseDbContext` real desde
-`host.Services.CreateScope()` (el contenedor de DI ya construido), la
-misma tubería que usa cualquier request real, así que comparte
-exactamente la misma configuración sin builders duplicados:
-
-```csharp
-protected override IHost CreateHost(IHostBuilder builder)
-{
-    var host = base.CreateHost(builder);
-
-    using var scope = host.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<WellSenseDbContext>();
-    if (!db.MembershipPlans.Any())
-    {
-        db.MembershipPlans.AddRange(/* los mismos 4 planes de antes */);
-        db.SaveChanges();
-    }
-
-    return host;
-}
-```
-
-Solo se tocó `tests/WellSense.Tests/Integration/CustomWebApplicationFactory.cs`
-— nada de `Program.cs`, de los handlers, ni de las pruebas mismas. §7.5 y
-§8 (última fila del checklist) quedan resueltos con este fix; el resto de
-los riesgos abiertos (§7.1–§7.4) siguen en pie tal como se documentaron
-arriba.

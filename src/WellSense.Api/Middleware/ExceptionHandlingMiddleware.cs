@@ -42,6 +42,11 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
             logger.LogWarning("Error de Payment {ErrorCode} en {Path}", pex.ErrorCode, context.Request.Path);
             await WriteProblem(context, (HttpStatusCode)pex.HttpStatus, pex.Message, new { code = pex.ErrorCode });
         }
+        catch (MlDomainException mex)
+        {
+            logger.LogWarning("Error de ML {ErrorCode} en {Path}", mex.ErrorCode, context.Request.Path);
+            await WriteProblem(context, (HttpStatusCode)mex.HttpStatus, mex.Message, new { code = mex.ErrorCode });
+        }
         catch (UnauthorizedAccessException uex)
         {
             logger.LogWarning(uex, "Acceso no autorizado en {Path}", context.Request.Path);

@@ -115,7 +115,15 @@ public class StressScoreConfiguration : IEntityTypeConfiguration<StressScore>
         b.ToTable("stress_scores");
         b.HasKey(x => x.Id);
         b.HasIndex(x => new { x.UserId, x.Date }).IsUnique();
-        b.Property(x => x.Level).HasConversion<string>();
+        // Mismo bug ya corregido en Measurement.Type/SyncOperation.Status (Bloque 4) y
+        // Subscription.Status/Payment.Status (Bloque 6) — HasConversion<string>()
+        // genérico daría "Low"/"Medium"/"High", no 'LOW'/'MEDIUM'/'HIGH' (el CHECK de la
+        // BD es sensible a mayúsculas). Este era el último de los 4 que ya había
+        // quedado flagueado como riesgo pendiente en el HANDOFF de Bloque 4 — este
+        // bloque lo activa por primera vez, así que se corrige ahora.
+        b.Property(x => x.Level).HasConversion(
+            v => v.ToString().ToUpperInvariant(),
+            v => (StressLevel)Enum.Parse(typeof(StressLevel), v, true));
         b.Property(x => x.Factors).HasColumnType("jsonb");
     }
 }

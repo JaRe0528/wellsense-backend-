@@ -276,6 +276,11 @@ file class ThrowingDbContextDecoratorWithSideEffect(
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Billing.MembershipPlan> MembershipPlans => inner.MembershipPlans;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Billing.Subscription> Subscriptions => inner.Subscriptions;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Billing.Payment> Payments => inner.Payments;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Measurements.SleepSession> SleepSessions => inner.SleepSessions;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Measurements.ActivitySession> ActivitySessions => inner.ActivitySessions;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Wellness.WellnessScore> WellnessScores => inner.WellnessScores;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Wellness.StressScore> StressScores => inner.StressScores;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Wellness.MlPrediction> MlPredictions => inner.MlPredictions;
 
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {

@@ -7,6 +7,7 @@ using WellSense.Domain.Identity;
 using WellSense.Domain.Measurements;
 using WellSense.Domain.Notifications;
 using WellSense.Domain.Profiles;
+using WellSense.Domain.Wellness;
 using WellSense.Infrastructure.Persistence;
 
 namespace WellSense.Tests.TestHelpers;
@@ -39,6 +40,11 @@ public class ThrowingDbContextDecorator(WellSenseDbContext inner, int failFirstN
     public DbSet<MembershipPlan> MembershipPlans => inner.MembershipPlans;
     public DbSet<Subscription> Subscriptions => inner.Subscriptions;
     public DbSet<Payment> Payments => inner.Payments;
+    public DbSet<SleepSession> SleepSessions => inner.SleepSessions;
+    public DbSet<ActivitySession> ActivitySessions => inner.ActivitySessions;
+    public DbSet<WellnessScore> WellnessScores => inner.WellnessScores;
+    public DbSet<StressScore> StressScores => inner.StressScores;
+    public DbSet<MlPrediction> MlPredictions => inner.MlPredictions;
 
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
