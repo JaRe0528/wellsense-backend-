@@ -27,6 +27,6 @@ public class InfrastructureSmokeTests
         var act = () => context.Model.GetEntityTypes().ToList();
 
         act.Should().NotThrow();
-        context.Model.GetEntityTypes().Should().HaveCount(26); // las 26 tablas mapeadas en Bloque 1
+        context.Model.GetEntityTypes().Should().HaveCount(27); // 26 del Bloque 1 + DeviceCommand (Bloque 8)
     }
 }
