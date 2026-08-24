@@ -2,6 +2,7 @@ using MediatR;
 using Microsoft.EntityFrameworkCore;
 using WellSense.Application.Common.Exceptions;
 using WellSense.Application.Common.Interfaces;
+using WellSense.Domain.Devices;
 
 namespace WellSense.Application.Devices.Commands.ListDeviceCommands;
 
