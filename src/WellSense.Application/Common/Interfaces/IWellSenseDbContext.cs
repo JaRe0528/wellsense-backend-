@@ -14,8 +14,8 @@ namespace WellSense.Application.Common.Interfaces;
 /// Abstracción del DbContext que puede usar Application sin depender de Npgsql/EF.Design.
 /// Expone los DbSets que Auth (Bloque 2), Users+Profile (Bloque 3),
 /// Devices+Measurements+Sync (Bloque 4), SignalR+FCM (Bloque 5), Memberships+Payments
-/// (Bloque 6) y ML V1/reglas (Bloque 7) necesitan; el resto de módulos agregarán los
-/// suyos cuando les toque su bloque.
+/// (Bloque 6), ML V1/reglas (Bloque 7) y Device Command System (Bloque 8) necesitan; el
+/// resto de módulos agregarán los suyos cuando les toque su bloque.
 /// </summary>
 public interface IWellSenseDbContext
 {
@@ -26,6 +26,7 @@ public interface IWellSenseDbContext
     DbSet<AuditLog> AuditLogs { get; }
     DbSet<Device> Devices { get; }
     DbSet<DeviceLinkCode> DeviceLinkCodes { get; }
+    DbSet<DeviceCommand> DeviceCommands { get; }
     DbSet<Profile> Profiles { get; }
     DbSet<Goal> Goals { get; }
     DbSet<OnboardingSurvey> OnboardingSurveys { get; }

@@ -266,6 +266,7 @@ file class ThrowingDbContextDecoratorWithSideEffect(
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Identity.AuditLog> AuditLogs => inner.AuditLogs;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Devices.Device> Devices => inner.Devices;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Devices.DeviceLinkCode> DeviceLinkCodes => inner.DeviceLinkCodes;
+    public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Devices.DeviceCommand> DeviceCommands => inner.DeviceCommands;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Profiles.Profile> Profiles => inner.Profiles;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Profiles.Goal> Goals => inner.Goals;
     public Microsoft.EntityFrameworkCore.DbSet<WellSense.Domain.Profiles.OnboardingSurvey> OnboardingSurveys => inner.OnboardingSurveys;

@@ -20,4 +20,8 @@ public class SyncDomainException(string errorCode, string message, int httpStatu
 
     public static SyncDomainException BatchTooLarge(int max)
         => new("SYNC_BATCH_TOO_LARGE", $"Un batch de sincronización no puede tener más de {max} mediciones.", 400);
+
+    /// <summary>Bloque 8 (Device Command System) — mismo criterio de reuso que DeviceNotFound: el ACK apunta a un comando de un dispositivo, sigue siendo el mismo dominio de Devices.</summary>
+    public static SyncDomainException CommandNotFound()
+        => new("COMMAND_NOT_FOUND", "El comando no existe o no pertenece a este dispositivo.", 404);
 }

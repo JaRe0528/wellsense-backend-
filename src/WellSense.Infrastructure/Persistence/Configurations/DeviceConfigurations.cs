@@ -51,3 +51,52 @@ public class DeviceLinkCodeConfiguration : IEntityTypeConfiguration<DeviceLinkCo
         // como fuente de verdad las migraciones, no el modelo Fluent.
     }
 }
+
+public class DeviceCommandConfiguration : IEntityTypeConfiguration<DeviceCommand>
+{
+    public void Configure(EntityTypeBuilder<DeviceCommand> b)
+    {
+        b.ToTable("device_commands");
+        b.HasKey(x => x.Id);
+        b.HasOne<Device>().WithMany().HasForeignKey(x => x.DeviceId);
+        b.HasOne<User>().WithMany().HasForeignKey(x => x.UserId);
+        b.HasIndex(x => new { x.DeviceId, x.Status }); // ix_device_commands_device_status
+        b.HasIndex(x => new { x.UserId, x.CreatedAt }); // ix_device_commands_user_created
+        b.Property(x => x.Payload).HasColumnType("jsonb");
+        b.Property(x => x.AckPayload).HasColumnType("jsonb");
+
+        // Type tiene guion bajo en la BD (START_MONITORING) — no coincide con el nombre
+        // del enum de C# (StartMonitoring) ni con un simple ToUpperInvariant(), hace
+        // falta el switch completo (mismo patrón que MeasurementType, Bloque 4).
+        b.Property(x => x.Type).HasConversion(v => TypeToDb(v), v => TypeFromDb(v));
+
+        // Status SÍ coincide con ToUpperInvariant() (nombres de una sola palabra, sin
+        // guion bajo) — mismo patrón simple que MembershipPlan.Code/Subscription.Status/
+        // Payment.Status (Bloque 6). Aprendido de los 4 bugs anteriores de
+        // HasConversion<string>() genérico: nunca usarlo aquí sin verificar primero que
+        // el nombre del enum coincide EXACTAMENTE con el literal del CHECK salvo mayúsculas.
+        b.Property(x => x.Status).HasConversion(
+            v => v.ToString().ToUpperInvariant(),
+            v => (DeviceCommandStatus)Enum.Parse(typeof(DeviceCommandStatus), v, true));
+    }
+
+    private static string TypeToDb(DeviceCommandType v) => v switch
+    {
+        DeviceCommandType.StartMonitoring => "START_MONITORING",
+        DeviceCommandType.StopMonitoring => "STOP_MONITORING",
+        DeviceCommandType.ChangeInterval => "CHANGE_INTERVAL",
+        DeviceCommandType.SyncNow => "SYNC_NOW",
+        DeviceCommandType.RequestStatus => "REQUEST_STATUS",
+        _ => throw new ArgumentOutOfRangeException(nameof(v))
+    };
+
+    private static DeviceCommandType TypeFromDb(string v) => v switch
+    {
+        "START_MONITORING" => DeviceCommandType.StartMonitoring,
+        "STOP_MONITORING" => DeviceCommandType.StopMonitoring,
+        "CHANGE_INTERVAL" => DeviceCommandType.ChangeInterval,
+        "SYNC_NOW" => DeviceCommandType.SyncNow,
+        "REQUEST_STATUS" => DeviceCommandType.RequestStatus,
+        _ => throw new ArgumentOutOfRangeException(nameof(v))
+    };
+}

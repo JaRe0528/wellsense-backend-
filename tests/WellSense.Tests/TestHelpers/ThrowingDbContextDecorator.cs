@@ -30,6 +30,7 @@ public class ThrowingDbContextDecorator(WellSenseDbContext inner, int failFirstN
     public DbSet<AuditLog> AuditLogs => inner.AuditLogs;
     public DbSet<Device> Devices => inner.Devices;
     public DbSet<DeviceLinkCode> DeviceLinkCodes => inner.DeviceLinkCodes;
+    public DbSet<DeviceCommand> DeviceCommands => inner.DeviceCommands;
     public DbSet<Profile> Profiles => inner.Profiles;
     public DbSet<Goal> Goals => inner.Goals;
     public DbSet<OnboardingSurvey> OnboardingSurveys => inner.OnboardingSurveys;

@@ -60,9 +60,10 @@ builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 
-// ---------- SignalR (Bloque 5: dashboard en vivo) ----------
+// ---------- SignalR (Bloque 5: dashboard en vivo; Bloque 8: comandos a dispositivos) ----------
 builder.Services.AddSignalR();
 builder.Services.AddScoped<IDashboardNotifier, SignalRDashboardNotifier>();
+builder.Services.AddScoped<IDeviceCommandNotifier, SignalRDeviceCommandNotifier>();
 
 // ---------- JWT Bearer ----------
 // IMPORTANTE: `Jwt:Secret` (y el resto de los valores de este bloque) se leen desde
@@ -110,15 +111,17 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         // SignalR (Bloque 5): un WebSocket no puede mandar un header Authorization normal
         // en el handshake del navegador — el patrón oficial de ASP.NET Core es leer el
         // JWT de un query string `access_token` en vez del header, PERO solo para
-        // requests al propio hub (nunca para el resto de la Api, donde el header sigue
-        // siendo obligatorio). El chequeo de path acota esto exactamente a esa ruta.
+        // requests a los propios hubs (nunca para el resto de la Api, donde el header
+        // sigue siendo obligatorio). El chequeo de path acota esto exactamente a esas
+        // rutas — Bloque 8 agrega /hubs/device-commands al mismo chequeo.
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
             {
                 var accessToken = context.Request.Query["access_token"];
                 var path = context.HttpContext.Request.Path;
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs/dashboard"))
+                var isHubRequest = path.StartsWithSegments("/hubs/dashboard") || path.StartsWithSegments("/hubs/device-commands");
+                if (!string.IsNullOrEmpty(accessToken) && isHubRequest)
                 {
                     context.Token = accessToken;
                 }
@@ -168,6 +171,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHub<DashboardHub>("/hubs/dashboard");
+app.MapHub<DeviceCommandHub>("/hubs/device-commands");
 
 app.Run();
 

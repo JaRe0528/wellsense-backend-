@@ -105,3 +105,18 @@ public class FakePaymentGateway : IPaymentGateway
             : new ChargeResult(false, $"tx-{Guid.NewGuid()}", null, null, NextDeclineReason));
     }
 }
+
+public record CapturedDeviceCommandNotification(Guid DeviceId, object Command);
+
+public class SpyDeviceCommandNotifier : IDeviceCommandNotifier
+{
+    public List<CapturedDeviceCommandNotification> Calls { get; } = [];
+    public bool ThrowOnNotify { get; set; }
+
+    public Task NotifyDeviceAsync(Guid deviceId, object command, CancellationToken ct = default)
+    {
+        if (ThrowOnNotify) throw new InvalidOperationException("simulated push failure");
+        Calls.Add(new CapturedDeviceCommandNotification(deviceId, command));
+        return Task.CompletedTask;
+    }
+}

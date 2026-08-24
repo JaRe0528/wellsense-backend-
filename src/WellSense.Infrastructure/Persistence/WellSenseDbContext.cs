@@ -28,6 +28,7 @@ public class WellSenseDbContext(DbContextOptions<WellSenseDbContext> options) : 
     // Dispositivos
     public DbSet<Device> Devices => Set<Device>();
     public DbSet<DeviceLinkCode> DeviceLinkCodes => Set<DeviceLinkCode>();
+    public DbSet<DeviceCommand> DeviceCommands => Set<DeviceCommand>();
 
     // Mediciones / sync (fuera de alcance funcional del Bloque 1-3, mapeado por completitud del esquema)
     public DbSet<Measurement> Measurements => Set<Measurement>();
