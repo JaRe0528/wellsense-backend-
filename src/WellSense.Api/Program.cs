@@ -66,11 +66,14 @@ builder.Services.AddScoped<IDashboardNotifier, SignalRDashboardNotifier>();
 builder.Services.AddScoped<IDeviceCommandNotifier, SignalRDeviceCommandNotifier>();
 
 // ---------- CORS (Bloque 10: hardening) ----------
-// Whitelist explícita, nunca wildcard — `Cors:AllowedOrigins` es un array en
-// appsettings.json (o User Secrets/variables de entorno en cada ambiente), nunca
-// `AllowAnyOrigin()`. Un array vacío/ausente significa "ningún origen permitido" (falla
-// cerrado, no abierto) — no un fallback silencioso a "todo permitido".
-var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+// Whitelist explícita, nunca wildcard — `Cors:AllowedOrigins` es un STRING separado por
+// comas (no un array): más simple y sin ambigüedad de binding, y más práctico para
+// Render.com/variables de entorno planas (un array anidado vía env vars obliga a
+// convenciones tipo `Cors__AllowedOrigins__0` que la mayoría de las plataformas PaaS no
+// manejan bien; una sola variable separada por comas sí). Un valor vacío/ausente
+// significa "ningún origen permitido" (falla cerrado, no abierto).
+var allowedOrigins = (builder.Configuration["Cors:AllowedOrigins"] ?? string.Empty)
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Default", policy => policy

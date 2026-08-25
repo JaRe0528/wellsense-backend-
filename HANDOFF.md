@@ -9,6 +9,54 @@
 
 ---
 
+## Actualización — 192/196 → corrección de 4 fallas reales tras `dotnet build && dotnet test`
+
+Corriste el primer `dotnet test` real de estos dos bloques: 192/196 pasaron,
+4 fallaron. Diagnóstico de las 4, y por qué NO significan lo mismo entre sí:
+
+**3 de las 4 eran un bug en mis propias pruebas, no en la app.**
+`BootstrapFirstAdminCommandHandler` verifica, a propósito, si existe
+CUALQUIER admin en TODO el sistema — es el punto central de su diseño de
+seguridad (autodeshabilitarse para siempre tras el primer uso). Pero
+`AdminFlowEndpointTests` tenía 4 pruebas que cada una asumía ser "la
+primera" contra la MISMA base de datos InMemory compartida por
+`IClassFixture<CustomWebApplicationFactory>`. Solo la que xUnit ejecutó
+primero consiguió de verdad el 204; las otras tres, correctamente según el
+propio diseño de la app, recibieron 409 `ALREADY_BOOTSTRAPPED` — y una de
+ellas, al no tener en realidad un token de admin válido, se cayó más
+adelante con un error de deserialización JSON al intentar leer una
+respuesta de error como si fuera un `RefreshResponse` exitoso. La app
+funcionó exactamente como debía; el aislamiento de mis pruebas estaba mal.
+Corregido: las 4 pruebas que necesitan "todavía no existe ningún admin"
+ahora crean y descartan su propia `CustomWebApplicationFactory` aislada en
+vez de compartir la inyectada por la clase — las que no bootstrapean
+(403/401 puros) siguen usando la compartida, más barata.
+
+**La cuarta (CORS) era una decisión de diseño insuficientemente robusta de
+mi parte, no una certeza rota.** Configuré `Cors:AllowedOrigins` como un
+array, y en las pruebas lo poblaba vía una clave indexada
+(`Cors:AllowedOrigins:0`) agregada por un proveedor de configuración
+distinto al de `appsettings.json` (que ya declaraba ese mismo array, vacío).
+No tenía certeza plena de que el binding de un array por claves indexadas
+se fusionara de forma predecible entre dos proveedores de configuración
+distintos — lo dije explícitamente como una posible causa en mi propio
+razonamiento antes de que corrieras las pruebas. En vez de seguir
+adivinando, cambié `Cors:AllowedOrigins` de array a un STRING plano
+separado por comas (`"https://a.com,https://b.com"`) — elimina la
+ambigüedad de binding por completo (un solo valor, nunca una fusión de
+claves indexadas de dos fuentes), y de paso es más práctico para
+Render.com/variables de entorno planas, que es hacia donde me comentaste
+que van a desplegar: un array anidado por env vars obliga a la convención
+`Cors__AllowedOrigins__0`, que la mayoría de las plataformas PaaS no
+manejan bien, mientras que una sola variable separada por comas es
+trivial ahí.
+
+Ambos tipos de fix — aislamiento de pruebas y la simplificación de CORS —
+ya están en el ZIP adjunto. Quedo a la espera de que confirmes
+`dotnet test` en 196/196.
+
+---
+
 ## 0. Aviso operativo (se mantiene)
 
 Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude

@@ -65,8 +65,12 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
                 // secreto real de ningún ambiente.
                 ["Admin:BootstrapSecret"] = "test-admin-bootstrap-secret",
                 // Bloque 10: un origen conocido para poder probar que CORS realmente
-                // aplica la whitelist (permite este, rechaza cualquier otro).
-                ["Cors:AllowedOrigins:0"] = "https://allowed.example.com"
+                // aplica la whitelist (permite este, rechaza cualquier otro). String
+                // plano separado por comas, mismo formato que Program.cs espera — no un
+                // array indexado (`:0`), para no depender de ninguna sutileza de cómo
+                // .NET fusiona un array ya declarado (vacío) en appsettings.json con
+                // claves indexadas agregadas después por otro proveedor de configuración.
+                ["Cors:AllowedOrigins"] = "https://allowed.example.com"
             });
         });
 
