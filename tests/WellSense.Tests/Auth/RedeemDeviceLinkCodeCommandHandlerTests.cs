@@ -93,4 +93,31 @@ public class RedeemDeviceLinkCodeCommandHandlerTests
 
         await act.Should().ThrowAsync<AuthDomainException>().Where(e => e.ErrorCode == "INVALID_DEVICE_LINK_CODE");
     }
+
+    [Fact]
+    public async Task Successful_redemption_writes_an_audit_log_entry()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var clock = new FixedClock(DateTimeOffset.UtcNow);
+        var user = new User
+        {
+            Id = Guid.NewGuid(), Email = "user@x.com", PasswordHash = "h",
+            EmailVerified = true, Status = UserStatus.Active, CreatedAt = clock.UtcNow, UpdatedAt = clock.UtcNow
+        };
+        db.Users.Add(user);
+        var hasher = new FakeDeviceLinkCodeHasher();
+        db.DeviceLinkCodes.Add(new DeviceLinkCode
+        {
+            Id = Guid.NewGuid(), UserId = user.Id, CodeHash = hasher.Hash("999888"),
+            ExpiresAt = clock.UtcNow.AddMinutes(30), CreatedAt = clock.UtcNow, MaxAttempts = 5
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new RedeemDeviceLinkCodeCommandHandler(
+            db, hasher, new FakeJwtTokenService(), new SequentialTokenGenerator(), clock, Config());
+
+        await handler.Handle(new RedeemDeviceLinkCodeCommand("999888", null, null, null, "1.2.3.4"), default);
+
+        db.AuditLogs.Should().ContainSingle(a => a.UserId == user.Id && a.Action == "device_link_code_redeemed" && a.IpAddress == "1.2.3.4");
+    }
 }

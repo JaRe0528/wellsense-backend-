@@ -33,6 +33,12 @@ namespace WellSense.Application.Memberships.SubscribeToPlan;
 /// deliberado: cobrar dos veces por accidente en un handler de dinero real es el tipo de
 /// bug que no se debe arriesgar ni una vez, así que el resultado del cobro se guarda en
 /// una variable y se reutiliza, nunca se vuelve a invocar el gateway más abajo.
+///
+/// Modificado en Bloque 10 (auditoría completa): se agregó un registro en `audit_logs`
+/// (`subscription_changed`) en el Paso 2, junto con la nueva suscripción — cubre tanto
+/// planes pagos como FREE (incluido el camino de "cancelar" vía CancelSubscriptionCommandHandler,
+/// que reusa este mismo handler). Nunca se registra en el camino declinado — ese intento
+/// ya queda registrado en `payments` con status DECLINED, no hace falta duplicarlo aquí.
 /// </summary>
 public class SubscribeToPlanCommandHandler(
     IWellSenseDbContext db,
@@ -129,6 +135,20 @@ public class SubscribeToPlanCommandHandler(
             db.Payments.Add(payment);
             paymentId = payment.Id;
         }
+
+        db.AuditLogs.Add(new WellSense.Domain.Identity.AuditLog
+        {
+            Id = Guid.NewGuid(),
+            UserId = request.CurrentUserId,
+            Action = "subscription_changed",
+            Metadata = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                subscriptionId = newSubscription.Id,
+                planCode = plan.Code.ToString().ToUpperInvariant(),
+                paid = charge is not null
+            }),
+            CreatedAt = clock.UtcNow
+        });
 
         await db.SaveChangesAsync(ct);
 

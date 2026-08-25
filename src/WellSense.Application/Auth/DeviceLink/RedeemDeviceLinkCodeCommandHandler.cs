@@ -15,7 +15,13 @@ namespace WellSense.Application.Auth.DeviceLink;
 /// HANDOFF-DB), así que un código mal tecleado nunca produce una fila que "contar" en
 /// `attempts` (HANDOFF-DB §8 riesgo 7). La defensa real es el rate limiting por IP
 /// configurado a nivel de endpoint en la Api (ver Program.cs / appsettings
-/// IpRateLimiting) — P0 según el encargo de este bloque.
+/// IpRateLimiting) — P0 según el encargo de ese bloque.
+///
+/// Modificado en Bloque 10 (auditoría completa): se agregó un registro en `audit_logs`
+/// (`device_link_code_redeemed`) al final del camino feliz — nunca en los caminos de
+/// error (código inválido/expirado/bloqueado), donde no hay a quién atribuir el intento
+/// de forma confiable sin arriesgar la misma fuga de información que ya evita
+/// AuthDomainException.InvalidDeviceLinkCode() en la respuesta HTTP.
 /// </summary>
 public class RedeemDeviceLinkCodeCommandHandler(
     IWellSenseDbContext db,
@@ -77,8 +83,18 @@ public class RedeemDeviceLinkCodeCommandHandler(
             CreatedAt = clock.UtcNow
         });
 
-        // Device (creado), DeviceLinkCode (marcado usado) y RefreshToken (nuevo) se
-        // confirman juntos en una sola transacción implícita.
+        db.AuditLogs.Add(new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            Action = "device_link_code_redeemed",
+            Metadata = "{}",
+            IpAddress = request.IpAddress,
+            CreatedAt = clock.UtcNow
+        });
+
+        // Device (creado), DeviceLinkCode (marcado usado), RefreshToken (nuevo) y el
+        // registro de auditoría se confirman juntos en una sola transacción implícita.
         await db.SaveChangesAsync(ct);
 
         return new RedeemDeviceLinkCodeResult(

@@ -95,4 +95,22 @@ public class DevicesTests
 
         db.Devices.Single().Status.Should().Be(DeviceStatus.Unpaired);
     }
+
+    [Fact]
+    public async Task Register_and_unpair_each_write_their_own_audit_log_entry()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var clock = new FixedClock(DateTimeOffset.UtcNow);
+        var userId = Guid.NewGuid();
+        var registerHandler = new RegisterDeviceCommandHandler(db, clock);
+
+        var deviceId = await registerHandler.Handle(new RegisterDeviceCommand(userId, "WATCH", null, null, null), default);
+        db.AuditLogs.Should().ContainSingle(a => a.UserId == userId && a.Action == "device_registered");
+
+        var unpairHandler = new UnpairDeviceCommandHandler(db, clock);
+        await unpairHandler.Handle(new UnpairDeviceCommand(userId, deviceId), default);
+
+        db.AuditLogs.Should().ContainSingle(a => a.Action == "device_unpaired");
+        db.AuditLogs.Should().HaveCount(2); // uno de cada acción, no se pisan entre sí
+    }
 }

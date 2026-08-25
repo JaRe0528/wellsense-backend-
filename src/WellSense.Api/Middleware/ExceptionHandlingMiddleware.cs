@@ -47,6 +47,11 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
             logger.LogWarning("Error de ML {ErrorCode} en {Path}", mex.ErrorCode, context.Request.Path);
             await WriteProblem(context, (HttpStatusCode)mex.HttpStatus, mex.Message, new { code = mex.ErrorCode });
         }
+        catch (AdminDomainException adex)
+        {
+            logger.LogWarning("Error de Admin {ErrorCode} en {Path}", adex.ErrorCode, context.Request.Path);
+            await WriteProblem(context, (HttpStatusCode)adex.HttpStatus, adex.Message, new { code = adex.ErrorCode });
+        }
         catch (UnauthorizedAccessException uex)
         {
             logger.LogWarning(uex, "Acceso no autorizado en {Path}", context.Request.Path);

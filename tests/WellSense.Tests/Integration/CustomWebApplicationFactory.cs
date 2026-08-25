@@ -59,7 +59,14 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
                 ["ConnectionStrings:Postgres"] = "Host=localhost;Database=unused;Username=unused;Password=unused",
                 ["Jwt:Secret"] = "test-secret-please-not-in-prod-32bytes-min!!",
                 ["DeviceLink:Pepper"] = "test-pepper-please-not-in-prod",
-                ["RateLimiting:Enabled"] = EnableRateLimiting.ToString()
+                ["RateLimiting:Enabled"] = EnableRateLimiting.ToString(),
+                // Bloque 9: valor conocido para que las pruebas de integración puedan
+                // ejercitar POST /admin/bootstrap de punta a punta sin depender de un
+                // secreto real de ningún ambiente.
+                ["Admin:BootstrapSecret"] = "test-admin-bootstrap-secret",
+                // Bloque 10: un origen conocido para poder probar que CORS realmente
+                // aplica la whitelist (permite este, rechaza cualquier otro).
+                ["Cors:AllowedOrigins:0"] = "https://allowed.example.com"
             });
         });
 

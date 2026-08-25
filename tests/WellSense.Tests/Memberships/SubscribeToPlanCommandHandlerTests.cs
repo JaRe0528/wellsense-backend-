@@ -129,4 +129,25 @@ public class SubscribeToPlanCommandHandlerTests
 
         await act.Should().ThrowAsync<PaymentDomainException>().Where(e => e.ErrorCode == "PLAN_NOT_FOUND");
     }
+
+    [Fact]
+    public async Task Subscribing_writes_an_audit_log_entry_but_a_declined_attempt_does_not()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        await SeedPlansAsync(db);
+        var clock = new FixedClock(DateTimeOffset.UtcNow);
+        var userId = Guid.NewGuid();
+
+        var declinedGateway = new FakePaymentGateway { NextApproved = false };
+        var declineHandler = new SubscribeToPlanCommandHandler(db, declinedGateway, clock);
+        var declinedAct = () => declineHandler.Handle(new SubscribeToPlanCommand(userId, "PRO", "tok", "idem-audit-1"), default);
+        await declinedAct.Should().ThrowAsync<PaymentDomainException>();
+        db.AuditLogs.Should().BeEmpty(); // el intento rechazado ya queda en `payments`, no se duplica en audit_logs
+
+        var approvedGateway = new FakePaymentGateway { NextApproved = true };
+        var approveHandler = new SubscribeToPlanCommandHandler(db, approvedGateway, clock);
+        await approveHandler.Handle(new SubscribeToPlanCommand(userId, "PRO", "tok", "idem-audit-2"), default);
+
+        db.AuditLogs.Should().ContainSingle(a => a.UserId == userId && a.Action == "subscription_changed");
+    }
 }

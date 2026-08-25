@@ -77,4 +77,25 @@ public class GenerateDeviceLinkCodeCommandHandlerTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
+
+    [Fact]
+    public async Task Successful_generation_writes_exactly_one_audit_log_entry_even_after_a_retry()
+    {
+        using var inMemory = InMemoryDbContextFactory.Create();
+        var userId = Guid.NewGuid();
+        var clock = new FixedClock(DateTimeOffset.UtcNow);
+
+        // Falla una vez (simula colisión) antes de tener éxito — confirma que el
+        // registro de auditoría del intento fallido se desprende igual que el código,
+        // sin quedar duplicado junto con el del intento que sí tuvo éxito.
+        var db = new ThrowingDbContextDecorator(inMemory, failFirstNCalls: 1);
+        var handler = new GenerateDeviceLinkCodeCommandHandler(
+            db, new SequentialTokenGenerator(), new FakeDeviceLinkCodeHasher(),
+            new ControllableViolationDetector(alwaysReturn: true), clock,
+            NullLogger<GenerateDeviceLinkCodeCommandHandler>.Instance);
+
+        await handler.Handle(new GenerateDeviceLinkCodeCommand(userId), default);
+
+        inMemory.AuditLogs.Should().ContainSingle(a => a.UserId == userId && a.Action == "device_link_code_generated");
+    }
 }

@@ -65,6 +65,21 @@ builder.Services.AddSignalR();
 builder.Services.AddScoped<IDashboardNotifier, SignalRDashboardNotifier>();
 builder.Services.AddScoped<IDeviceCommandNotifier, SignalRDeviceCommandNotifier>();
 
+// ---------- CORS (Bloque 10: hardening) ----------
+// Whitelist explícita, nunca wildcard — `Cors:AllowedOrigins` es un array en
+// appsettings.json (o User Secrets/variables de entorno en cada ambiente), nunca
+// `AllowAnyOrigin()`. Un array vacío/ausente significa "ningún origen permitido" (falla
+// cerrado, no abierto) — no un fallback silencioso a "todo permitido".
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Default", policy => policy
+        .WithOrigins(allowedOrigins)
+        .AllowAnyHeader()
+        .AllowAnyMethod()
+        .AllowCredentials()); // necesario para que el navegador mande el header Authorization en llamadas cross-origin
+});
+
 // ---------- JWT Bearer ----------
 // IMPORTANTE: `Jwt:Secret` (y el resto de los valores de este bloque) se leen desde
 // `builder.Configuration` DENTRO del callback de `AddJwtBearer`, no en una variable
@@ -167,6 +182,8 @@ if (app.Configuration.GetValue("RateLimiting:Enabled", true))
 }
 
 app.UseHttpsRedirection();
+app.UseSecurityHeaders();
+app.UseCors("Default");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

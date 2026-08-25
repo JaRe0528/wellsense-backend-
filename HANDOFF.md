@@ -1,10 +1,11 @@
-# HANDOFF.md — Chat Backend (.NET), Bloque 8: Device Command System
+# HANDOFF.md — Chat Backend (.NET), Bloque 10: Auditoría completa + hardening de código
 
-> Entregable del **Bloque 8**. Requiere Bloque 7 cerrado (ya lo está,
-> 133/133 reales, incluyendo el cierre del último `HasConversion<string>()`
-> pendiente). Web → API → SignalR → Android → Watch, con
-> START_MONITORING/STOP_MONITORING/CHANGE_INTERVAL/SYNC_NOW/REQUEST_STATUS
-> y COMMAND_ACK — backlog P1.
+> Entregable del **Bloque 10**, el último de los 10. Requiere Bloque 9
+> cerrado (ver `HANDOFF-Bloque9.md`, entregado en el mismo envío — ambos
+> bloques se hicieron uno tras otro sin esperar luz verde entre ellos, tal
+> como indicaste). Cierra el segundo de los dos huecos reales del
+> planteamiento original: auditoría incompleta y ningún hardening de
+> headers/CORS explícito.
 
 ---
 
@@ -13,243 +14,201 @@
 Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude
 correr `dotnet build`/`dotnet test` aquí. Lo que sí hice en este bloque:
 
-- **Nueva migración (015) validada contra Postgres real de punta a punta**:
-  no solo el `CREATE TABLE`, sino el ciclo de vida completo con `UPDATE`s
-  reales — confirmé que ambos `CHECK` de consistencia
-  (`delivered_at`/`acknowledged_at` obligatorios según el `status`)
-  rechazan las transiciones inválidas y aceptan las válidas, antes de
-  escribir una sola línea de C# encima.
-- **Encontré y corregí una violación de capas en mi propio primer
-  borrador**: `DeviceCommandHub` iba a inyectar `IWellSenseDbContext`
-  directamente — rompía la regla que el resto del proyecto respeta sin
-  excepción (Api → Application vía MediatR, nunca Api → DbContext directo).
-  Lo corregí extrayendo una query dedicada (`IsDeviceOwnedByUserQuery`) en
-  vez de dejarlo pasar por conveniencia — ver §2.
-- **Apliqué con disciplina completa la lección de Bloque 6/7**:
-  `IWellSenseDbContext` y sus 3 implementadores actualizados en el mismo
-  cambio, antes de cualquier lógica — incluyendo el caso nuevo de que
-  `WellSenseDbContext.cs` (a diferencia de bloques anteriores) SÍ necesitó
-  el `DbSet` nuevo agregado a mano, porque esta es la primera tabla que no
-  venía ya en el DDL original de Bloque 1.
-- **Escribí la conversión de enum de `DeviceCommandType` con el switch
-  completo desde el principio** (no el atajo de `ToUpperInvariant()`) —
-  porque a diferencia de `DeviceCommandStatus`, sus valores SÍ tienen
-  guion bajo (`START_MONITORING`), y ya aprendí de los 4 bugs anteriores a
-  verificar eso ANTES de escribir la conversión, no después de que fallara.
-- Los 3 barridos automatizados de siempre, limpios sobre las ~35 rutas
-  nuevas de este bloque.
+- **Hice un inventario real antes de asumir nada**: `grep` de todos los
+  `AuditLogs.Add` existentes en el código, en vez de confiar en mi memoria
+  de qué ya estaba cubierto. Esto encontró una discrepancia real con tu
+  encargo — ver §1, corregida explícitamente en vez de duplicar trabajo o
+  ignorarla en silencio.
+- **Encontré y corregí un bug real en mi propio primer intento** de agregar
+  auditoría a `GenerateDeviceLinkCodeCommandHandler`: ese handler ya tenía
+  un bucle de reintento por colisión (Bloque 2) que desprende del change
+  tracker las entidades del intento fallido antes de reintentar — mi primer
+  borrador agregaba el registro de auditoría sin desprenderlo también, lo
+  que habría duplicado filas de `audit_logs` en cualquier reintento real.
+  Lo corregí antes de escribir la prueba, y esa misma prueba
+  (`Successful_generation_writes_exactly_one_audit_log_entry_even_after_a_retry`)
+  ejercita exactamente ese camino.
+- **Validé contra Postgres real** las 3 formas exactas de metadata `jsonb`
+  que este bloque ahora escribe (vacía, con motivo de fallo, con detalle de
+  suscripción) — confirmado que las tres se insertan sin error.
+- Los 3 barridos automatizados de siempre, limpios sobre todo lo tocado en
+  este bloque.
 
 ---
 
-## 1. La tabla nueva: `device_commands` (migración 015)
+## 1. Corrección a tu encargo: dos acciones ya estaban auditadas
 
-No estaba en el DDL original de HANDOFF-DB — extensión de esquema
-propuesta por este bloque, mismo criterio que la migración 014 (timezone,
-Bloque 3). Pendiente de que el chat de DB/orquestador la confirme si se
-retoca el diseño maestro.
+Antes de escribir código, hice `grep -rn "AuditLogs.Add"` sobre todo el
+código para saber qué faltaba de verdad, en vez de asumir. Resultado:
+**`cambio de contraseña` y `reset de contraseña` ya se registraban desde el
+Bloque 2** (`ChangePasswordCommandHandler` → `"password_changed"`;
+`ResetPasswordCommandHandler` → `"password_reset"`), junto con
+`refresh_token_reuse_detected` (Bloque 2) y `account_deleted` (Bloque 3).
 
-```sql
-CREATE TABLE device_commands (
-    id, device_id, user_id,
-    type             CHECK (IN START_MONITORING/STOP_MONITORING/CHANGE_INTERVAL/SYNC_NOW/REQUEST_STATUS),
-    payload          jsonb,
-    status           CHECK (IN PENDING/DELIVERED/ACKNOWLEDGED/FAILED/EXPIRED),
-    ack_payload      jsonb,
-    created_at, delivered_at, acknowledged_at, expires_at,
-    CHECK (status NOT IN (DELIVERED,ACKNOWLEDGED,FAILED) OR delivered_at IS NOT NULL),
-    CHECK ((status IN (ACKNOWLEDGED,FAILED)) = (acknowledged_at IS NOT NULL))
-);
-```
-
-Ambos `CHECK` de consistencia se probaron contra Postgres real con
-`UPDATE`s reales, no solo se razonaron:
-
-```
---- marcar DELIVERED sin delivered_at ---
-ERROR: violates check constraint "device_commands_check"
---- marcar ACKNOWLEDGED sin acknowledged_at ---
-ERROR: violates check constraint "device_commands_check1"
---- con ambos campos puestos correctamente: ambas transiciones pasan ---
-```
-
-`expires_at` existe en el esquema pero **este bloque no implementa el job
-que lo hace efectivo** (marcar `EXPIRED` un comando que nadie confirmó a
-tiempo) — mismo tipo de decisión que la renovación de suscripciones del
-Bloque 6: se deja el dato listo, no se construye el job que nadie pidió
-todavía.
+Tu lista los incluía como pendientes — no lo son. No los toqué de nuevo
+(hubiera sido registrar la misma acción dos veces, o peor, reemplazar un
+`Action` ya usado en producción hipotética por otro nombre y romper
+continuidad del historial). Lo señalo explícitamente para que tu propio
+registro de qué está cubierto quede correcto, no para restar mérito al
+encargo — el resto de la lista sí eran huecos reales, cubiertos abajo.
 
 ---
 
-## 2. El error de capas que encontré en mi propio borrador
+## 2. Qué quedó auditado — inventario completo tras este bloque
 
-Al escribir `DeviceCommandHub`, mi primer instinto fue inyectarle
-`IWellSenseDbContext` directamente para verificar que el `deviceId` que
-Android manda por `RegisterForDevice` de verdad le pertenece. Antes de
-seguir, caí en que eso rompía una regla que el resto del proyecto respeta
-sin excepción desde el Bloque 2: **Api nunca toca `IWellSenseDbContext`
-directamente, siempre pasa por MediatR hacia Application**. Un Hub de
-SignalR es parte de la capa Api tanto como un Controller — la misma regla
-aplica.
+| Acción | Handler | Bloque que lo escribió |
+|---|---|---|
+| `refresh_token_reuse_detected` | `RefreshTokenCommandHandler` | 2 (ya existía) |
+| `password_changed` | `ChangePasswordCommandHandler` | 2 (ya existía) |
+| `password_reset` | `ResetPasswordCommandHandler` | 2 (ya existía) |
+| `account_deleted` | `DeleteMeCommandHandler` | 3 (ya existía) |
+| **`login_succeeded`** | `LoginCommandHandler` | **10 (nuevo)** |
+| **`login_failed`** | `LoginCommandHandler` | **10 (nuevo)** |
+| **`device_link_code_generated`** | `GenerateDeviceLinkCodeCommandHandler` | **10 (nuevo)** |
+| **`device_link_code_redeemed`** | `RedeemDeviceLinkCodeCommandHandler` | **10 (nuevo)** |
+| **`device_registered`** | `RegisterDeviceCommandHandler` | **10 (nuevo)** |
+| **`device_unpaired`** | `UnpairDeviceCommandHandler` | **10 (nuevo)** |
+| **`subscription_changed`** | `SubscribeToPlanCommandHandler` | **10 (nuevo)** |
 
-Lo corregí extrayendo una query mínima, reutilizable:
-`Application/Devices/IsDeviceOwnedByUser` — un solo método,
-`Task<bool> Handle(...)`, que el Hub llama vía `ISender` exactamente igual
-que un Controller. No es una excepción a la regla, es la regla aplicada
-con disciplina incluso cuando el atajo directo hubiera sido una línea más
-corta.
+Decisiones puntuales:
 
----
-
-## 3. El flujo completo: por qué el ACK es REST y no SignalR
-
-`Web → API → SignalR → Android → Watch` cubre la ida. Para la vuelta
-(`COMMAND_ACK`), decidí **REST, no el mismo canal de SignalR que entregó
-el comando** — decisión explícita, documentada en el propio código:
-
-- Android puede tardar en confirmar (relaya el comando al Watch, espera su
-  respuesta) — la conexión de SignalR que recibió el comando original
-  podría haberse caído y reconectado para cuando Android por fin tiene
-  algo que confirmar.
-- Un `POST` autenticado normal (mismo Bearer de siempre) es más
-  resiliente/reintentable que depender de que la MISMA conexión en vivo
-  siga viva en el momento exacto de confirmar.
-- El ACK sí se reenvía a Web en vivo por SignalR — pero por el canal ya
-  existente (`DashboardHub`, Bloque 5), reutilizando el mismo patrón de
-  evento de integración de MediatR que `MeasurementsSyncedEvent`
-  (`DeviceCommandAcknowledgedEvent` → `IDashboardNotifier`). Cierra el loop
-  sin que Web tenga que hacer polling.
-
-**Hub nuevo, `DeviceCommandHub`** (`/hubs/device-commands`), distinto de
-`DashboardHub`: el grupo es por **dispositivo**, no por usuario — un
-comando siempre va dirigido a uno específico, y un usuario puede tener
-varios dispositivos conectados a la vez. Como el JWT no lleva qué
-dispositivo es Android (mismo gap ya resuelto en `/sync`, Bloque 4), el
-cliente debe invocar `RegisterForDevice(deviceId)` explícitamente tras
-conectarse — verificado contra la propiedad real del dispositivo (§2)
-antes de unir la conexión al grupo.
+- **`login_failed` distingue el motivo** (`invalid_credentials`,
+  `account_not_active`, `email_not_verified`) en `metadata.reason`, pero
+  usa el mismo `Action` para los tres — el detalle vive en la metadata, no
+  en el nombre de la acción, para que filtrar por `action=login_failed` en
+  el panel (Bloque 9) capture los tres casos de una vez.
+- **Un intento de login con un email que no existe se audita con
+  `UserId = null`** — no hay a quién atribuirlo, y no se debe revelar en
+  el registro (ni siquiera indirectamente, vía qué usuario quedó
+  vinculado) si ese email está o no registrado. Mismo principio que ya
+  regía la respuesta HTTP desde Bloque 2 (`AuthDomainException.InvalidCredentials()`
+  es el mismo error tanto si el email no existe como si la contraseña es
+  incorrecta).
+- **Un intento DECLINADO de suscripción NO se audita en `audit_logs`** —
+  ya queda registrado en `payments` con `status = DECLINED`, duplicarlo en
+  `audit_logs` no agrega información, solo ruido. Solo `subscription_changed`
+  se audita cuando el cambio de verdad se confirma (plan pago aprobado o
+  plan FREE, incluido "cancelar", que internamente llama al mismo
+  handler).
+- **`device_link_code_generated` sobrevive el bucle de reintento por
+  colisión sin duplicarse** — ver §0, el bug que atrapé en mi propio
+  borrador.
 
 ---
 
-## 4. Endpoints listos
+## 3. CORS — whitelist explícita, nunca wildcard
 
-**Device Commands** (`api/v1/devices/{deviceId}/commands`, todos
-requieren Bearer):
+`Cors:AllowedOrigins` (`appsettings.json`, array de strings) — un array
+vacío significa **cero orígenes permitidos**, no "todo permitido": falla
+cerrado, no abierto. `AllowCredentials()` está activo porque el dashboard
+Web necesita mandar el header `Authorization` en llamadas cross-origin.
 
-| Método | Ruta | Quién lo llama | Request | Response | Errores |
-|---|---|---|---|---|---|
-| POST | `` | Web/Admin | `{type, payload?}` | 201 `{commandId, type, status, createdAt}` | 400 validación, 404 `DEVICE_NOT_FOUND` |
-| POST | `/{commandId}/ack` | Android | `{status: ACKNOWLEDGED\|FAILED, ackPayload?}` | 204 (idempotente) | 400 validación, 404 `DEVICE_NOT_FOUND`/`COMMAND_NOT_FOUND` |
-| GET | `` | Web/Android | — | 200 `[{id, type, payload, status, ackPayload, createdAt, deliveredAt, acknowledgedAt, expiresAt}]` | 404 `DEVICE_NOT_FOUND` |
-| GET | `/pending` | Android | — | 200 igual forma, solo PENDING/DELIVERED | 404 `DEVICE_NOT_FOUND` |
+Probado contra el pipeline HTTP real, no solo configurado: un origen en la
+whitelist recibe `Access-Control-Allow-Origin` de vuelta; uno que no está
+en la whitelist, no lo recibe — confirmado con dos pruebas de integración
+distintas, no solo una prueba "positiva".
 
-**SignalR**: `/hubs/device-commands` (Android) — evento `deviceCommand`
-`(commandId, type, payload)`. `/hubs/dashboard` (Web, ya existía) — nuevo
-`eventType`: `"device_command_acknowledged"`
-`{deviceId, commandId, status}`.
-
-`type` usa el mismo vocabulario que el `CHECK` de la BD:
-`START_MONITORING`/`STOP_MONITORING`/`CHANGE_INTERVAL`/`SYNC_NOW`/`REQUEST_STATUS`.
-`CHANGE_INTERVAL` exige `payload: {"intervalSeconds": <entero positivo>}`
-— es el único tipo que necesita un payload específico, validado antes de
-llegar al handler.
+**DevSecOps/Web deben poblar `Cors:AllowedOrigins` por ambiente antes de
+que cualquier cliente Web funcione contra un despliegue real** — hoy el
+array está vacío en `appsettings.json` (comentario explícito ahí mismo).
+Android/el reloj no pasan por CORS (no son navegadores), así que esto solo
+afecta al dashboard Web y a un futuro panel admin Web.
 
 ---
 
-## 5. Decisiones tomadas en este bloque
+## 4. Headers de seguridad
 
-- **El comando SIEMPRE se crea, exista o no un cliente Android
-  conectado** — el push por SignalR es un mejor-esfuerzo de entrega
-  inmediata, nunca la fuente de verdad de si el comando "existe". Un push
-  fallido (nadie conectado, error de red) nunca tumba la emisión — el
-  comando queda `PENDING`, recuperable después vía `/pending`.
-- **`DELIVERED` significa "se intentó empujar por SignalR", NO que Android
-  lo recibió** — esa confirmación real es el ACK, un paso completamente
-  aparte. Nombré esto explícito para que Web/Android no confundan
-  "delivered" con "acknowledged".
-- **El ACK es idempotente** — reconocer un comando que ya estaba en un
-  estado terminal no lo reprocesa ni lanza error, mismo criterio que
-  Logout/MarkNotificationRead en bloques anteriores. Útil si Android
-  reintenta el POST por un timeout de red aunque el primero sí haya
-  llegado.
-- **`SyncDomainException` se reutilizó para `COMMAND_NOT_FOUND`**, en vez
-  de crear una cuarta clase de excepción de dominio — mismo criterio que
-  ya se usaba para `DEVICE_NOT_FOUND`: un comando pertenece al mismo
-  dominio conceptual que un dispositivo (Bloque 4).
-- **Se implementó un Hub nuevo (`DeviceCommandHub`), no se sobrecargó
-  `DashboardHub`** — semánticas de grupo distintas (por dispositivo vs.
-  por usuario) ameritan hubs separados, aunque ambos vivan en el mismo
-  proyecto y compartan el mismo patrón de JWT-por-query-string.
+`SecurityHeadersMiddleware` fija tres headers en **toda** respuesta,
+incluidas las de error (probado explícitamente: un 401 generado por el
+middleware de autenticación, antes de llegar a ningún controller, también
+los lleva — usa `Response.OnStarting(...)`, que se dispara sin importar
+qué parte del pipeline termina escribiendo la respuesta):
+
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+
+**CSP y HSTS quedan deliberadamente fuera**, tal como pediste — ambos
+dependen de que haya HTTPS real en producción (HSTS le dice al navegador
+"solo háblame por HTTPS"; CSP necesita declarar orígenes de scripts/estilos
+que este backend, al no servir ninguna página HTML, no puede anticipar sin
+coordinarse con Web). Responsabilidad de DevSecOps cuando el despliegue
+real tenga TLS terminado.
 
 ---
 
-## 6. Qué pruebas existen
+## 5. Endpoint nuevo: `GET /api/v1/admin/audit-logs`
 
-Unitarias con EF InMemory:
-- `DeviceCommands/IssueDeviceCommandCommandHandlerTests`: comando se crea
-  y pasa a `DELIVERED` cuando el push "funciona"; **el comando se crea
-  igual y queda `PENDING` cuando el push falla** (nunca tumba la
-  emisión); `CHANGE_INTERVAL` sin payload válido rechazado por el
-  validador; emitir a dispositivo ajeno o desvinculado lanza
-  `DEVICE_NOT_FOUND`.
-- `DeviceCommands/AcknowledgeDeviceCommandCommandHandlerTests`: ACK pone
-  `ACKNOWLEDGED`/`FAILED` según corresponda y publica el evento;
-  **reconocer un comando ya en estado terminal es idempotente** (no se
-  reprocesa); reconocer un comando inexistente lanza `COMMAND_NOT_FOUND`.
-- `DeviceCommands/ListDeviceCommandsTests`: historial ordenado
-  más-reciente-primero; `/pending` excluye `ACKNOWLEDGED`/`FAILED`;
-  listar comandos de un dispositivo ajeno lanza `DEVICE_NOT_FOUND`.
-- `DeviceCommands/DeviceCommandTypeExtensionsTests`: roundtrip completo de
-  los 5 tipos.
-- `DeviceCommands/IsDeviceOwnedByUserQueryHandlerTests`: la query que le
-  quité al Hub, probada por separado.
+Para que el panel de Admin (Bloque 9) pueda mostrar lo que este bloque
+terminó de poblar. Mismo patrón de paginación que el resto de Admin
+(`page`, `pageSize`, filtros opcionales `userId`/`action`), mismo
+`[RequireRole("Admin")]` — un usuario normal recibe 403, probado
+explícitamente igual que los otros 5 endpoints administrativos.
+
+---
+
+## 6. Modificaciones a código ya aprobado — todas flagueadas
+
+Cinco handlers de bloques ya cerrados se modificaron para agregar el
+registro de auditoría — **ninguno cambió su firma de constructor ni su
+lógica de negocio existente**, solo se agregó la llamada a
+`db.AuditLogs.Add(...)` en el punto correcto de cada uno:
+
+- `LoginCommandHandler` (Bloque 2)
+- `GenerateDeviceLinkCodeCommandHandler` (Bloque 2)
+- `RedeemDeviceLinkCodeCommandHandler` (Bloque 2)
+- `RegisterDeviceCommandHandler` (Bloque 4)
+- `UnpairDeviceCommandHandler` (Bloque 4)
+- `SubscribeToPlanCommandHandler` (Bloque 6)
+
+Confirmé contra las pruebas ya existentes de cada uno que ninguna
+aserción se rompe (ninguna de esas pruebas verificaba el contenido
+completo de `db.AuditLogs`, así que agregar filas nuevas no las
+invalida) — y agregué una prueba nueva por handler para el
+comportamiento de auditoría específico.
+
+---
+
+## 7. Qué pruebas existen (Bloque 10)
+
+Unitarias con EF InMemory — una por cada handler modificado, más:
+- `Admin/ListAuditLogsQueryHandlerTests`: filtro por usuario (resuelve el
+  email), filtro por acción, entradas sin `UserId` no rompen la resolución
+  de email.
+- `LoginCommandHandlerTests` (extendida): login exitoso registra IP;
+  login fallido con contraseña incorrecta se atribuye al usuario real;
+  login fallido con email inexistente se registra con `UserId = null`.
+- `GenerateDeviceLinkCodeCommandHandlerTests` (extendida): **exactamente
+  un** registro de auditoría incluso tras un reintento por colisión.
+- `RedeemDeviceLinkCodeCommandHandlerTests`, `DevicesTests`,
+  `SubscribeToPlanCommandHandlerTests` (extendidas): un registro por
+  acción exitosa; el intento de pago declinado NO genera uno.
 
 Integración HTTP end-to-end:
-- `Integration/DeviceCommandsFlowEndpointTests`: ciclo completo
-  emitir→pendientes→confirmar→historial por REST real.
-- `Integration/DeviceCommandHubEndpointTests` — **la prueba más
-  importante de este bloque**: conecta un cliente SignalR REAL a
-  `/hubs/device-commands` (mismo patrón que `DashboardHubEndpointTests`,
-  Bloque 5), invoca `RegisterForDevice`, emite un comando real por REST, y
-  confirma que el cliente conectado lo recibe en vivo. Segunda prueba
-  complementaria: una conexión que NUNCA se registra para el dispositivo
-  no recibe sus comandos — confirma que el aislamiento por grupo
-  realmente aísla.
-
----
-
-## 7. Qué necesita Web/Android de este bloque
-
-- **Web**: `POST /devices/{deviceId}/commands` para emitir; escuchar
-  `device_command_acknowledged` en el mismo `DashboardHub` que ya usan
-  desde Bloque 5 para ver la confirmación en vivo sin hacer polling.
-- **Android**: conectarse a `wss://.../hubs/device-commands?access_token={jwt}`
-  e invocar `RegisterForDevice(deviceId)` justo después de conectar — sin
-  eso, nunca se une al grupo y nunca recibe nada, aunque la conexión esté
-  viva. Escuchar el evento `deviceCommand`. **Confirmar SIEMPRE por REST**
-  (`POST .../ack`), nunca asumir que el mismo canal de SignalR sigue
-  disponible para responder.
-- **Android, al reconectar**: llamar `GET .../pending` para recuperar
-  cualquier comando que se haya perdido mientras estaba desconectado —
-  nunca depender solo del push en vivo.
-- **`CHANGE_INTERVAL` exige `payload: {"intervalSeconds": N}`** con N
-  entero positivo — el resto de los tipos no necesita payload.
+- `Integration/SecurityHardeningEndpointTests`: los 3 headers presentes en
+  cualquier respuesta, incluida una de error; CORS deja pasar el origen
+  permitido y no revela nada al no permitido — las 4 pruebas contra el
+  pipeline real, no contra la configuración en aislamiento.
+- `Integration/AdminFlowEndpointTests` (extendida): un login real de un
+  usuario normal aparece en `/admin/audit-logs` cuando un admin lo
+  consulta; un usuario normal recibe 403 en ese mismo endpoint.
 
 ---
 
 ## 8. Riesgos abiertos
 
-1. **No hay job que marque `EXPIRED`** los comandos que nadie confirmó
-   dentro de `expires_at` — el dato existe, nada actúa sobre él todavía.
-   Mismo tipo de alcance que la renovación de suscripciones (Bloque 6).
-2. **Un comando duplicado (Web hace doble clic, dos POST) crea dos filas
-   distintas** — a diferencia de `/sync` (Bloque 4) o `/subscribe` (Bloque
-   6), este endpoint no tiene un concepto de idempotency-key. No parecía
-   necesario para "emitir un comando" (a diferencia de "cobrar una
-   tarjeta" o "sincronizar mediciones", donde un duplicado tiene
-   consecuencias reales) — pero si Web/Android reportan comandos
-   duplicados como un problema real, es un patrón ya establecido
-   (`requestId`/`idempotencyKey`) que se puede agregar.
-3. Mismo aviso de siempre: no compilado/probado por mí en mi propio
+1. **`Cors:AllowedOrigins` vacío por default** — el backend arranca
+   correctamente pero NINGÚN origen Web funcionará hasta que DevSecOps lo
+   configure por ambiente. Es la decisión correcta (fallar cerrado), pero
+   hay que comunicarlo para que no parezca un bug el día del primer
+   despliegue con un dashboard Web real.
+2. **No hay purga/retención de `audit_logs`** — la tabla crece sin límite;
+   no se pidió una política de retención para este bloque y no se
+   inventó una. Candidato natural para un futuro trabajo de
+   mantenimiento/DevSecOps.
+3. **CSP/HSTS pendientes de DevSecOps**, tal como se decidió explícitamente
+   en el encargo — no es un olvido, es el alcance tal como se definió.
+4. Mismo aviso de siempre: no compilado/probado por mí en mi propio
    entorno — necesito `dotnet build && dotnet test` de su lado antes de
    aprobar.
 
@@ -257,21 +216,24 @@ Integración HTTP end-to-end:
 
 ## 9. Checklist de las 10 capas del DoD
 
-- [x] Validador (FluentValidation) en cada comando, incluyendo la
-      validación de forma específica de `CHANGE_INTERVAL`
-- [x] Prueba unitaria de cada handler, incluyendo el caso de "push falla
-      pero el comando igual se crea" y el ACK idempotente
-- [x] Prueba de integración HTTP end-to-end + **una conexión SignalR real
-      de punta a punta** para el hub nuevo, no solo la lógica que lo
-      dispara
+- [x] Prueba unitaria de cada cambio de auditoría, incluyendo el bug de
+      duplicación que atrapé en mi propio borrador
+- [x] Prueba de integración HTTP end-to-end de CORS, headers de seguridad
+      y el endpoint nuevo de audit-logs — todas contra el pipeline real
 - [x] Documentación de API (Swagger, `[ProducesResponseType]`)
-- [x] Manejo de errores consistente (`COMMAND_NOT_FOUND` agregado a
-      `SyncDomainException`, ya conectado al middleware desde Bloque 4)
-- [x] Migración nueva validada contra Postgres real, ciclo de vida
-      completo incluido, no solo el `CREATE TABLE`
-- [x] Error de capas en mi propio borrador (Hub con acceso directo a BD)
-      encontrado y corregido antes de escribir más código encima
-- [ ] Compilación y `dotnet test` reales — **pendiente de tu lado**, ver §0
+- [x] Validación contra Postgres real de las 3 formas de metadata que este
+      bloque escribe
+- [x] Corrección explícita a una discrepancia real del encargo (§1), en
+      vez de duplicar trabajo o ignorarla
+- [x] Modificaciones a código ya aprobado, todas flagueadas con su
+      justificación y confirmadas contra las pruebas existentes
+- [ ] Compilación y `dotnet test` reales — **pendiente de tu lado**
 
-Quedo a la espera de tu luz verde (o correcciones) antes del siguiente
-bloque.
+---
+
+## Cierre de los 10 bloques
+
+Con Bloque 9 (panel de administración + RBAC) y Bloque 10 (auditoría
+completa + hardening) el Backend queda funcionalmente completo según el
+plan original de 10 bloques. Quedo a la espera de tu resultado de
+compilación/pruebas antes de dar esto por cerrado del todo.

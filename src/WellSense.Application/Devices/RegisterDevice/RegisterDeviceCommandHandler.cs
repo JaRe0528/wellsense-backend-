@@ -11,6 +11,9 @@ namespace WellSense.Application.Devices.RegisterDevice;
 /// directo con el backend (ver 01-ARQUITECTURA-Y-STACK.md: Watch↔Phone es un canal
 /// separado del backend). Se deja también disponible para PHONE por completitud/
 /// simetría, no porque sea el camino esperado para ese caso.
+///
+/// Modificado en Bloque 10 (auditoría completa): se agregó un registro en `audit_logs`
+/// (`device_registered`) — no se registraba antes.
 /// </summary>
 public class RegisterDeviceCommandHandler(IWellSenseDbContext db, IDateTimeProvider clock)
     : IRequestHandler<RegisterDeviceCommand, Guid>
@@ -31,6 +34,16 @@ public class RegisterDeviceCommandHandler(IWellSenseDbContext db, IDateTimeProvi
             UpdatedAt = clock.UtcNow
         };
         db.Devices.Add(device);
+
+        db.AuditLogs.Add(new WellSense.Domain.Identity.AuditLog
+        {
+            Id = Guid.NewGuid(),
+            UserId = request.CurrentUserId,
+            Action = "device_registered",
+            Metadata = System.Text.Json.JsonSerializer.Serialize(new { deviceId = device.Id, type = request.Type }),
+            CreatedAt = clock.UtcNow
+        });
+
         await db.SaveChangesAsync(ct);
         return device.Id;
     }

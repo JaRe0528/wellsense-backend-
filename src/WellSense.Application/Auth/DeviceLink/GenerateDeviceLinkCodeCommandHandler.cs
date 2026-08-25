@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using WellSense.Application.Common.Interfaces;
 using WellSense.Domain.Devices;
+using WellSense.Domain.Identity;
 using EntityState = Microsoft.EntityFrameworkCore.EntityState;
 
 namespace WellSense.Application.Auth.DeviceLink;
@@ -60,11 +61,21 @@ public class GenerateDeviceLinkCodeCommandHandler(
             };
             db.DeviceLinkCodes.Add(newCode);
 
+            var auditLog = new AuditLog
+            {
+                Id = Guid.NewGuid(),
+                UserId = request.CurrentUserId,
+                Action = "device_link_code_generated",
+                Metadata = "{}", // nunca el código en claro ni su hash — ver DeviceLinkCodeHasher
+                CreatedAt = now
+            };
+            db.AuditLogs.Add(auditLog);
+
             try
             {
-                // DELETE (invalidación del anterior) + INSERT (nuevo código) viajan en
-                // esta única llamada — misma transacción implícita, tal como exige
-                // HANDOFF-DB.
+                // DELETE (invalidación del anterior) + INSERT (nuevo código) + el
+                // registro de auditoría viajan en esta única llamada — misma
+                // transacción implícita, tal como exige HANDOFF-DB.
                 await db.SaveChangesAsync(ct);
                 return new GenerateDeviceLinkCodeResult(rawCode, newCode.ExpiresAt);
             }
@@ -78,8 +89,10 @@ public class GenerateDeviceLinkCodeCommandHandler(
                 // SaveChanges (solo la transacción de BD se revierte) — si no se
                 // desprenden aquí las entidades de este intento fallido, el próximo
                 // SaveChanges intentaría insertar/borrar de nuevo tanto lo viejo como
-                // lo nuevo, duplicando trabajo o fallando de otra forma.
+                // lo nuevo (incluyendo el registro de auditoría del intento fallido),
+                // duplicando trabajo o fallando de otra forma.
                 db.Entry(newCode).State = EntityState.Detached;
+                db.Entry(auditLog).State = EntityState.Detached;
                 foreach (var stale in previousUnused)
                     db.Entry(stale).State = EntityState.Unchanged;
             }
