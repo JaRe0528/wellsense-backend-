@@ -9,7 +9,37 @@
 
 ---
 
-## Actualización — 192/196 → corrección de 4 fallas reales tras `dotnet build && dotnet test`
+## Actualización 2 — 195/196 → causa raíz real de CORS encontrada (no otra corrección a ciegas)
+
+Segunda corrida real: 195/196, y las 3 fallas de aislamiento de pruebas
+quedaron confirmadas resueltas. Solo CORS seguía fallando — mi cambio
+anterior (array → string separado por comas) no atacaba la causa real,
+solo eliminaba una fuente de ambigüedad que no era el problema.
+
+**Causa raíz real, esta vez con evidencia, no una sospecha más**: leía
+`Cors:AllowedOrigins` de forma EAGER, en una variable de nivel superior de
+`Program.cs`, ANTES de `builder.Build()`. Pero yo mismo ya sabía de este
+patrón exacto de bug — mi propio comentario en `Program.cs`, ya desde el
+Bloque 2, dice explícitamente que `Jwt:Secret` debe leerse DENTRO del
+callback de `AddJwtBearer`, nunca en una variable calculada antes, porque
+las fuentes de configuración que `WebApplicationFactory.ConfigureAppConfiguration`
+agrega en las pruebas de integración no están garantizadas de estar ya
+fusionadas en `builder.Configuration` cuando el código de nivel superior
+de `Program.cs` se ejecuta de forma síncrona antes de `Build()`. Apliqué
+esa lección a JWT pero se me pasó aplicarla a CORS — literalmente el mismo
+tipo de bug, dos veces, en el mismo archivo.
+
+**Fix real**: `Cors:AllowedOrigins` ahora se lee DENTRO del callback de
+`AddCors(options => {...})` — ese callback se registra vía
+`services.Configure<CorsOptions>(...)` y solo se EVALÚA la primera vez que
+se resuelve `IOptions<CorsOptions>` (la primera request real), momento en
+el que toda la configuración de prueba ya está fusionada. Mismo patrón,
+mismo archivo, ahora aplicado consistentemente en los dos lugares que lo
+necesitaban.
+
+---
+
+## Actualización 1 — 192/196 → corrección de 4 fallas reales tras `dotnet build && dotnet test`
 
 Corriste el primer `dotnet test` real de estos dos bloques: 192/196 pasaron,
 4 fallaron. Diagnóstico de las 4, y por qué NO significan lo mismo entre sí:

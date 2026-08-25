@@ -72,10 +72,21 @@ builder.Services.AddScoped<IDeviceCommandNotifier, SignalRDeviceCommandNotifier>
 // convenciones tipo `Cors__AllowedOrigins__0` que la mayoría de las plataformas PaaS no
 // manejan bien; una sola variable separada por comas sí). Un valor vacío/ausente
 // significa "ningún origen permitido" (falla cerrado, no abierto).
-var allowedOrigins = (builder.Configuration["Cors:AllowedOrigins"] ?? string.Empty)
-    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+//
+// IMPORTANTE (mismo motivo que Jwt:Secret más abajo, y el mismo tipo de bug que ya
+// pasó una vez en la primera ronda de pruebas reales de este bloque): `Cors:AllowedOrigins`
+// se lee DENTRO del callback de `AddCors`, nunca en una variable calculada antes — ese
+// callback se registra vía `services.Configure<CorsOptions>(...)` y solo se EVALÚA la
+// primera vez que se resuelve `IOptions<CorsOptions>` (la primera request real), momento
+// en el que `builder.Configuration` ya tiene fusionadas TODAS las fuentes, incluidas las
+// que agrega `WebApplicationFactory.ConfigureAppConfiguration` en las pruebas de
+// integración. Leerlo antes, en una variable de nivel superior de Program.cs (como se
+// hizo en la primera versión de este bloque), corre el riesgo real de leer
+// `builder.Configuration` antes de que esas fuentes de prueba ya estén mezcladas.
 builder.Services.AddCors(options =>
 {
+    var allowedOrigins = (builder.Configuration["Cors:AllowedOrigins"] ?? string.Empty)
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     options.AddPolicy("Default", policy => policy
         .WithOrigins(allowedOrigins)
         .AllowAnyHeader()
