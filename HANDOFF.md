@@ -1,321 +1,87 @@
-# HANDOFF.md — Chat Backend (.NET), post-Bloque-10: fix urgente + correo real + límites de plan + WEB + upgrade
+# HANDOFF.md — Chat Backend (.NET), fix: endpoints de sesiones de sueño/actividad
 
-> Seis partes en un solo envío, en el orden de prioridad pedido. Requiere
-> Bloque 10 cerrado (196/196 confirmado). Migraciones nuevas: 016
-> (urgente), 017 (límites/features), 018 (device WEB) — las tres validadas
-> de punta a punta contra Postgres real, cada una con su ciclo completo
-> arriba/abajo/arriba, no solo el `CREATE`/`ALTER`.
-
----
-
-## Actualización — 208/218 → 3 correcciones reales tras `dotnet build && dotnet test`
-
-Corriste la primera ronda real: 208/218, 10 fallas + 1 warning de
-seguridad. Diagnóstico completo — dos son bugs míos genuinos (uno con
-implicación de seguridad real más allá de esta corrida), uno es un
-warning que valía la pena resolver de verdad, no solo silenciar:
-
-**1) 9 fallas, un solo bug real (`PlanLimitsResolver`)**: la primera
-versión usaba `FirstAsync` para buscar el plan FREE cuando un usuario no
-tiene suscripción activa — `FirstAsync` LANZA si no hay ningún
-`MembershipPlan` sembrado. Rompió 9 pruebas ya existentes
-(`DevicesTests`/`GetMyDailyScoresAndHistoryTests`) que nunca tuvieron
-razón de sembrar `MembershipPlans` antes de este bloque. Más grave que
-las pruebas en sí: en un despliegue real, si el seed de planes faltara o
-una migración corriera fuera de orden, **cualquier usuario sin
-suscripción de pago habría recibido un 500** al registrar un dispositivo
-o ver su historial de bienestar — no un caso hipotético, una superficie
-real de fragilidad que introduje yo. Corregido a `FirstOrDefaultAsync` +
-`PlanLimits.Unlimited` como fallback — fail-open, exactamente el mismo
-criterio que `PlanLimits.Parse` ya aplicaba ante un jsonb malformado, que
-se me olvidó extender al resolver completo.
-
-**2) 1 falla, bug de la PRUEBA, no de la plantilla de correo**:
-`WebUtility.HtmlEncode` codifica correctamente "ñ" como `&#241;` — HTML
-válido y seguro, se renderiza perfecto en cualquier cliente de correo. Mi
-prueba comparaba contra el texto plano sin codificar, no contra lo que
-realmente se genera. Corregido decodificando el HTML antes de comparar en
-la prueba — la plantilla de producción nunca tuvo ningún bug, era
-puramente una aserción de prueba mal escrita de mi parte.
-
-**3) El warning `NU1902` (MailKit 4.8.0, vulnerabilidad moderada) — lo
-investigué en vez de ignorarlo**: es `GHSA-9j88-vvj5-vhgr`, inyección de
-respuesta STARTTLS que permite degradar el mecanismo de autenticación
-SASL — **nos afecta directamente**, `SmtpEmailSender` usa exactamente
-`SecureSocketOptions.StartTls`. Confirmé con una búsqueda real que la
-versión que lo corrige es la 4.16.0 (no adiviné un número) y actualicé el
-paquete.
-
-Las 3 correcciones ya están en el ZIP adjunto.
+> Web asumía `GET /sync?type=sleep/activity`, que nunca existió —
+> `SyncController` (Bloque 4) solo tiene `POST /sync/measurements`.
+> Requiere lo último confirmado (218/218 real).
 
 ---
 
 ## 0. Aviso operativo
 
-Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude
-correr `dotnet build`/`dotnet test` aquí. Lo que sí hice:
-
-- Las 3 migraciones nuevas, validadas con el mismo rigor de siempre
-  (aplicar → confirmar el efecto real con un `INSERT`/`UPDATE` que
-  reproduce exactamente el caso que importa → revertir → confirmar que
-  revierte → volver a aplicar).
-- **Reproduje tu error de producción carácter por carácter** antes de
-  tocar nada (Parte 1) — no asumí la causa, la confirmé con un `PREPARE`/
-  `EXECUTE` que dispara el mismo `42804` que Render reportó.
-- **Escribí, pero no pude correr yo mismo**, la primera prueba de este
-  proyecto contra Postgres real vía Testcontainers (mi sandbox no tiene
-  Docker) — marcada explícitamente como pendiente de que ustedes la
-  confirmen, a diferencia de todo lo demás que sí validé con psql
-  directamente.
-- **Encontré y corregí dos errores reales en mi propio trabajo de este
-  mismo turno**, antes de que llegaran a ningún lado — ver §5.1 (dónde
-  vivía de verdad el `CHECK` de `devices.type`) y §5.2 (el bug de tipo
-  silencioso que ya estaba en el código, no algo que yo introduje, pero
-  que encontré al tocar esa zona).
-- Las credenciales SMTP reales que mandaste **no se escribieron en
-  ningún archivo** de este entregable — ni en código, ni en
-  `appsettings.json`, ni en este HANDOFF. Solo los nombres de las claves
-  de configuración.
-- Los 3 barridos automatizados de siempre, limpios sobre todo lo tocado.
+Confirmé el DDL exacto de `sleep_sessions`/`activity_sessions` en
+`007_up.sql` antes de escribir una sola línea — nombres de columna y
+nulabilidad tal cual el CREATE TABLE, no supuestos. Validé el shape real
+de la consulta (filtro por usuario + ventana de días + orden) contra
+Postgres real, incluyendo la columna generada `duration_minutes` (480 =
+8h, confirmado con un INSERT real). Sigo sin `dotnet build`/`dotnet test`
+en mi entorno.
 
 ---
 
-## 1. PARTE 1 — Bug urgente: login roto en producción (RESUELTO)
+## 1. Endpoints nuevos
 
-**Causa confirmada** (la tuya, verificada por mi cuenta): `audit_logs.ip_address`
-se creó como `inet` nativo desde la migración 002/Bloque 1— la tabla
-`audit_logs` en sí vive en la migración 002, confirmé el DDL exacto antes
-de escribir nada. `AuditLog.IpAddress` (C#) siempre fue un `string` plano
-sin `HasConversion` en `AuditLogConfiguration`. Nunca falló hasta que el
-Bloque 10 activó la auditoría real (login, etc.), momento en el que
-Npgsql empezó a mandar un parámetro `text` contra una columna `inet`.
+| Método | Ruta | Query | Response |
+|---|---|---|---|
+| GET | `/api/v1/sleep-sessions` | `?days=N` (default 30) | `[{id, startAt, endAt, durationMinutes, stages, createdAt}]` |
+| GET | `/api/v1/activity-sessions` | `?days=N` (default 30) | `[{id, type, startAt, endAt, steps, distanceM, calories, createdAt}]` |
 
-Reproduje el error EXACTO antes de escribir la migración:
-```
-PREPARE ins(...) AS INSERT INTO audit_logs(...) VALUES (...);
-EXECUTE ins(...);
-→ ERROR:  column "ip_address" is of type inet but expression is of type text
-```
-Carácter por carácter el mismo mensaje que reportó Render.
+Ambos: filtrados por el usuario autenticado (Bearer), ordenados más
+reciente primero (`start_at DESC`), `days` acotado entre 1 y 365.
 
-**Fix — migración 016**: `ALTER TABLE audit_logs ALTER COLUMN ip_address TYPE text;`
-No se tocó el modelo C# — `AuditLog.IpAddress` sigue siendo `string?`,
-tal como pediste. Validado: aplicar → el mismo `INSERT` que antes fallaba
-ahora funciona → revertir → vuelve a fallar (confirma que la reversión es
-real, no un placebo) → re-aplicar.
+**Campos exactamente los de la tabla** — nada inventado:
+`sleep_sessions` no tiene `type` (`activity_sessions` sí); `duration_minutes`
+es la columna GENERADA de Postgres, se expone tal cual se calculó, nunca
+recalculada en C#; `steps`/`distance_m`/`calories` son nullable en la BD
+y se exponen nullable en la respuesta.
 
-**Regresión escrita para que esto no vuelva a pasar en silencio**: hice un
-inventario honesto de por qué 196/196 pruebas en verde no atraparon esto
-— **todas** las casi 200 pruebas de integración de este proyecto usan el
-proveedor InMemory de EF Core, que no aplica tipos nativos de Postgres en
-absoluto. `Testcontainers.PostgreSql` estaba referenciado desde el
-Bloque 1 con la intención explícita de agregar pruebas contra Postgres
-real "cuando hubiera lógica de negocio que probar" — nunca se hizo, en
-ningún bloque. Escribí `AuditLogRealPostgresTests` (la primera prueba de
-este proyecto que corre contra un contenedor Postgres real, aplicando las
-16 migraciones reales) para cerrar ese hueco — **pero mi entorno no tiene
-Docker, así que no pude correrla yo mismo**. Necesito que la corran
-ustedes (`dotnet test`, con Docker disponible) para confirmarla; el fix en
-sí (la migración) SÍ está validado por mi cuenta.
+**`stages` viaja como el string jsonb crudo**, no deserializado a un
+objeto anidado — mismo criterio que `DeviceCommandResponse.Payload`
+(Bloque 8): consistente con cómo el resto de esta API ya expone columnas
+jsonb, en vez de introducir un patrón nuevo solo para este endpoint. Web
+hace `JSON.parse(stages)` si necesita inspeccionar el objeto.
 
 ---
 
-## 2. PARTE 2 — Correo real por SMTP (MailKit) con diseño de marca
+## 2. Decisiones
 
-- `SmtpEmailSender` (MailKit, STARTTLS puerto 587) reemplaza a
-  `LoggingEmailSender` como implementación real de `IEmailSender` — mismo
-  patrón que Firebase/Stripe: si `Smtp:Host` no está configurado, cae a
-  `LoggingEmailSender` (nunca lanza, nunca rompe el arranque). Un fallo
-  real de envío (credenciales rechazadas, host inalcanzable) tampoco se
-  propaga — un correo que no se pudo mandar nunca debe convertir un
-  registro exitoso en un 500 para el usuario.
-- **Credenciales**: viven SOLO en `Smtp:Host`/`Port`/`Username`/`Password`/
-  `FromAddress`/`FromName` y `Frontend:BaseUrl`, todas vacías en
-  `appsettings.json` (mismo patrón que `Jwt:Secret`) — configúrenlas en
-  Render como variables de entorno `Smtp__Host`, `Smtp__Username`, etc.
-  (doble guion bajo = separador de sección en variables de entorno .NET).
-- **Links reales**: `{Frontend:BaseUrl}/verificar-correo?token={token}` y
-  `{Frontend:BaseUrl}/restablecer-contrasena?token={token}` — el dominio
-  nunca está hardcodeado, viene de configuración.
-- **`IEmailSender` cambió de forma** (se agregó `recipientName`) — ambos
-  handlers que lo llaman se actualizaron: `RegisterCommandHandler` manda
-  `null` (todavía no existe Profile en ese punto del flujo);
-  `ForgotPasswordCommandHandler` ahora consulta `Profiles` y arma
-  `"{FirstName} {LastName}".Trim()`, cayendo a `null` (que
-  `SmtpEmailSender` resuelve a mostrar el email) si no hay nombre.
-- **Plantillas HTML** (`EmailTemplates.cs`, Infrastructure): funciones
-  puras, mismo criterio que `DailyScoringRules` — se puede probar el HTML
-  exacto sin SMTP de por medio. Tablas + estilos inline (nunca `<style>`
-  externo ni flexbox/grid — la mayoría de los clientes de correo no los
-  soportan bien), Arial/Helvetica. Los 3 colores (`#F3F5F1` Paper,
-  `#1B4B43` Pine, `#E64B3C` Pulse) y la estructura exacta que pediste
-  (header sólido con tagline, tarjeta blanca con eyebrow/título/párrafo/
-  botón/link plano/franja de vencimiento, footer fuera de la tarjeta).
-  El nombre de saludo se escapa con `HtmlEncode` — nunca se interpola
-  HTML crudo de un valor que el usuario controla (el nombre de su
-  Profile).
-- **Expiración real, no inventada**: el correo de verificación dice "vence
-  en 24 horas" porque `RegisterCommandHandler` de verdad pone
-  `ExpiresAt = clock.UtcNow.AddHours(24)`; el de reset dice "vence en 1
-  hora" porque `ForgotPasswordCommandHandler` de verdad usa
-  `AddHours(1)` — el texto del correo refleja el dato real, no un número
-  aparte que pudiera desincronizarse.
+- **Ventana simple "últimos N días desde ahora" en UTC** — a propósito,
+  NO alineada a medianoche local como `/wellness/me/history` (Bloque 7).
+  Ese endpoint agrega por día calendario; este lista sesiones
+  individuales con su propio `start_at`/`end_at` real, no hay una noción
+  de "día" que alinear a la zona horaria del usuario aquí.
+- **No aplica el límite de historial por plan** (`membership_plans.limits.historyDays`,
+  parte del encargo anterior) — no se pidió para este endpoint. Si
+  quieres consistencia con `/wellness/me/history`, es un cambio futuro
+  explícito, no algo que asumí.
+- **No hay endpoint que ESCRIBA en estas tablas todavía** — a diferencia
+  de `measurements` (que sí tiene `/sync/measurements`), nada en esta API
+  inserta filas en `sleep_sessions`/`activity_sessions` hoy. Las pruebas
+  de integración siembran directo contra el store de la app (vía
+  `factory.Services.CreateScope()`, el mismo patrón ya corregido en el
+  fix de Bloque 9 — nunca un `DbContextOptionsBuilder` armado a mano, que
+  crearía un store aislado con el mismo nombre pero sin conexión real).
+  Si Web también necesita ESCRIBIR sueño/actividad (no solo leer), es un
+  endpoint nuevo que no pediste en este encargo.
 
 ---
 
-## 3. PARTE 3 — Límites reales por plan (migración 017)
+## 3. Pruebas
 
-Valores elegidos (documentados como criterio propio, ajustables sin tocar
-código — viven en datos):
+Unitarias (EF InMemory): ventana de días respetada, orden
+más-reciente-primero, aislamiento entre usuarios, nulabilidad de
+`distanceM`/`calories` respetada, `durationMinutes` se expone tal cual se
+guardó.
 
-| Plan | maxDevices | historyDays |
-|---|---|---|
-| FREE | 1 | 7 |
-| BASIC | 2 | 30 |
-| PRO | 5 | 90 |
-| PROFESSIONAL | `null` (ilimitado) | `null` (ilimitado) |
-
-`membership_plans.limits` (jsonb) — `null` en un campo es el valor REAL
-sembrado para "sin límite", no un sentinel como `-1`. `PlanLimits.Parse`
-(Application, función pura) nunca lanza — un `limits` vacío o malformado
-cae a "sin límite" (fail-open, nunca bloquea a alguien por un dato
-corrupto). `PlanLimitsResolver.ResolveForUserAsync` (extension method
-compartido) resuelve el plan efectivo del usuario: su suscripción activa,
-o FREE si nunca tuvo ninguna (mismo criterio que `GetMyMembershipQueryHandler`)
-— **sin crear la fila de suscripción perezosamente**, porque un chequeo
-de límite es una lectura, no debería tener el efecto secundario de
-"afiliar" a alguien a FREE.
-
-**`POST /devices`**: cuenta dispositivos con `Status != Unpaired` contra
-`maxDevices` — desvincular uno libera el cupo (probado explícitamente).
-403 `PLAN_LIMIT_EXCEEDED` si se excede.
-
-**`GET /wellness/me/history`**: `Days` se recorta al `historyDays` del
-plan — nunca error, solo un resultado más chico. Probado en ambas
-direcciones: pedir más de lo permitido se recorta; pedir MENOS de lo
-permitido nunca se "regala" de más.
+Integración HTTP end-to-end: ambos endpoints devuelven solo las sesiones
+del usuario autenticado (nunca las de otro), `?days=` filtra
+correctamente sobre datos reales sembrados en el store de la app, y
+ambos exigen autenticación (401 sin token).
 
 ---
 
-## 4. PARTE 4 — Features honestos, no inventados
+## 4. Riesgo abierto
 
-`membership_plans.features` (antes `'{}'` vacío para los 4 planes desde
-Bloque 1) ahora es un arreglo real de strings, expuesto en
-`GET /memberships/plans` junto a `limits` — misma fuente de verdad que la
-Parte 3, no una copia separada.
-
-**Decisión deliberada**: los features SOLO reflejan lo que Parte 3
-realmente aplica (cantidad de dispositivos, días de historial) — **no
-inventé diferenciadores que no existen**, como "soporte prioritario" o
-"comandos en tiempo real" (el Device Command System del Bloque 8 no tiene
-ningún gating por plan hoy — cualquier usuario, de cualquier plan, ya
-puede emitir comandos; listarlo como feature de un plan superior sería
-publicidad falsa). Si en el futuro se gatea algo más por plan, ese es el
-momento de agregarlo a `features` — no antes.
-
----
-
-## 5. PARTE 5 — Dispositivos WEB
-
-### 5.1 Corrección a mi propio primer intento
-
-Mi primer paso fue buscar el `CHECK` de `devices.type` en la migración
-003 — no encontré ninguno ahí (esa migración es de `profiles`/`goals`) y
-casi concluí "no hace falta migración, el tipo es libre". Antes de dar
-eso por bueno, lo verifiqué contra Postgres real con un `INSERT` — **sí
-existe** un `CHECK (type IN ('PHONE','WATCH'))`, solo que vive en la
-migración 004 (donde se crea la tabla `devices` en sí), no en la 003.
-Corregido antes de escribir la migración equivocada — 018 sí es
-necesaria, y su comentario documenta explícitamente dónde vive el
-`CHECK` real para que este error no se repita.
-
-### 5.2 Bug de tipo silencioso, encontrado al tocar esta zona
-
-Al agregar `DeviceType.Web`, encontré que tanto la conversión de EF
-(`v == DeviceType.Phone ? "PHONE" : "WATCH"`) como el parseo en
-`RegisterDeviceCommandHandler` (`request.Type == "WATCH" ? ... : ...Phone`)
-eran ternarios binarios — **cualquier valor que no fuera exactamente
-"PHONE"/"WATCH" caía silenciosamente en el otro**, sin error. Nunca se
-manifestó porque el validador ya solo dejaba pasar esos dos valores, pero
-en cuanto WEB llegara sin este fix, se habría guardado como WATCH sin que
-nadie se enterara. Corregido con un switch completo en ambos lugares,
-mismo patrón que `MeasurementType`/`DeviceCommandType`.
-
-### 5.3 Lo que quedó
-
-- Migración 018: `devices_type_check` ahora acepta `'WEB'` — validado
-  antes/después/revertido/reaplicado contra Postgres real.
-- `POST /devices` y `POST /notifications/tokens` confirmados funcionando
-  igual para WEB que para PHONE/WATCH — prueba de integración HTTP real
-  end-to-end, no solo razonado.
-- **VAPID / Web Push**: no hace falta que yo exponga ninguna clave
-  pública nueva. `notification_tokens.fcm_token` (Bloque 5) ya es un
-  string genérico — el Web Push SDK de Firebase (`firebase-messaging`
-  en el navegador) genera su propio token FCM usando la
-  `VAPID_PUBLIC_KEY` del proyecto de Firebase de Web, que se configura
-  del lado del **Chat Web** directamente en su configuración de Firebase
-  (no es un secreto que el backend deba generar o guardar — es pública
-  por diseño, vive en el bundle del cliente Web). El backend no necesita
-  saber nada de VAPID: solo recibe el token FCM resultante y lo guarda
-  igual que para Android, `FirebaseCloudMessagingSender` ya envía a
-  cualquier token FCM sin importar de qué plataforma vino. **Pásenle
-  esto al Chat Web tal cual**: configuren su propio proyecto de Firebase
-  para Web, obtengan su VAPID key desde la consola de Firebase, y manden
-  el token resultante a `POST /notifications/tokens` — cero cambios
-  adicionales de nuestro lado.
-
----
-
-## 6. PARTE 6 — Upgrade de plan pagado a uno mayor (confirmado, sin bugs)
-
-`Upgrading_from_an_active_paid_plan_to_a_higher_one_replaces_it_cleanly_over_http`
-(BASIC activo → PRO con tarjeta aprobada) — el mecanismo de "reemplazo en
-dos pasos" que ya se había construido y probado en Bloque 6 para
-FREE→pagado y pagado→cancelar **funcionó correctamente también para
-pagado→pagado sin necesitar ningún cambio**: confirmé que
-`SubscribeToPlanCommandHandler` no distingue el caso "reemplazar una
-suscripción pagada" del caso "reemplazar la FREE lazy" — es la misma
-lógica de siempre (Paso 1: desactivar la anterior sola; Paso 2: crear la
-nueva + su pago, juntos). La prueba confirma las 3 cosas pedidas
-explícitamente: no quedan 2 suscripciones activas, el pago nuevo se
-registra correcto (y el de BASIC sigue en el historial, ahora asociado a
-una suscripción ya cancelada), y `GET /memberships/me` refleja PRO de
-inmediato.
-
----
-
-## 7. Riesgos abiertos
-
-1. **`AuditLogRealPostgresTests` no la pude correr yo** — ver §1, necesito
-   que la confirmen con Docker disponible.
-2. **VAPID/Web Push depende de que el Chat Web configure su propio
-   proyecto de Firebase para Web** — el backend ya está listo (§5.3), no
-   hay nada más de este lado.
-3. **Los valores de límites de plan (Parte 3) son mi criterio, no una
-   cifra de negocio confirmada** — ajustables sin migración adicional
-   (son datos, un `UPDATE membership_plans SET limits = ...` alcanza).
-4. Mismo aviso de siempre para el resto del código: no compilado/probado
-   por mí en mi propio entorno — necesito `dotnet build && dotnet test`
-   de su lado antes de aprobar.
-
----
-
-## 8. Checklist de las 10 capas del DoD
-
-- [x] Bug urgente: causa reproducida antes de escribir el fix, no asumida
-- [x] Migraciones (016, 017, 018) validadas contra Postgres real de punta
-      a punta — antes/después/revertido/reaplicado, no solo el `ALTER`
-- [x] Dos errores propios encontrados y corregidos antes de compilar
-      (dónde vivía el CHECK de devices.type; el bug de tipo silencioso)
-- [x] Credenciales reales nunca escritas en ningún archivo entregado
-- [x] Prueba unitaria de cada pieza nueva (plantillas de correo,
-      PlanLimits, límites de dispositivos/historial, tipo WEB)
-- [x] Prueba de integración HTTP end-to-end para WEB y para el caso de
-      upgrade de Parte 6
-- [x] Primera prueba del proyecto contra Postgres real (Testcontainers) —
-      escrita, marcada honestamente como no verificada por mi cuenta
-- [ ] Compilación y `dotnet test` reales — **pendiente de su lado**
-
-Todo en el ZIP adjunto. Quedo a la espera de su resultado — el bug de
-producción es lo más urgente, avísenme apenas confirmen que el login
-vuelve a funcionar.
+Ninguna migración nueva — ambas tablas y sus índices (`ix_sleep_sessions_user_start`,
+`ix_activity_sessions_user_start`) ya existían desde Bloque 1/007, así
+que las consultas por `user_id`+`start_at` ya están indexadas
+correctamente sin ningún cambio de esquema.
