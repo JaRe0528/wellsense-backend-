@@ -10,6 +10,13 @@ namespace WellSense.Application.Wellness.GetMyScoreHistory;
 /// cálculo que ComputeDailyScoresCommandHandler) — para graficar en el dashboard. Trae
 /// solo los días que SÍ tienen algún puntaje calculado (no rellena huecos con null para
 /// cada día sin datos); el cliente decide cómo mostrar los días faltantes.
+///
+/// Modificado post-Bloque-10 (Parte 3: límites reales de plan): `Days` se recorta al
+/// máximo que permite el plan ACTUAL del usuario (`historyDays`, jsonb en
+/// membership_plans) — nunca error, solo un resultado más chico. Si el cliente pide 90
+/// días y el plan solo permite 7, se devuelven como mucho 7; pedir menos de lo que el
+/// plan permite nunca se amplía a más. `null` en el límite del plan = sin límite (no se
+/// recorta nada).
 /// </summary>
 public class GetMyScoreHistoryQueryHandler(IWellSenseDbContext db, IDateTimeProvider clock)
     : IRequestHandler<GetMyScoreHistoryQuery, IReadOnlyList<DailyScoreHistoryItem>>
@@ -19,7 +26,13 @@ public class GetMyScoreHistoryQueryHandler(IWellSenseDbContext db, IDateTimeProv
         var profile = await db.Profiles.FirstOrDefaultAsync(p => p.UserId == request.CurrentUserId, ct);
         var timezone = profile?.Timezone ?? "UTC";
         var today = LocalDayRange.TodayInTimezone(clock.UtcNow, timezone);
-        var fromDate = today.AddDays(-request.Days + 1);
+
+        var limits = await db.ResolveForUserAsync(request.CurrentUserId, ct);
+        var effectiveDays = limits.HistoryDays is not null
+            ? Math.Min(request.Days, limits.HistoryDays.Value)
+            : request.Days;
+
+        var fromDate = today.AddDays(-effectiveDays + 1);
 
         var wellnessScores = await db.WellnessScores
             .Where(w => w.UserId == request.CurrentUserId && w.Date >= fromDate && w.Date <= today)

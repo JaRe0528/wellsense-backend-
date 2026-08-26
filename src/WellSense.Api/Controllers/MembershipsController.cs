@@ -21,7 +21,8 @@ public class MembershipsController(ISender mediator, ICurrentUserService current
     public async Task<ActionResult<IReadOnlyList<PlanResponse>>> ListPlans(CancellationToken ct)
     {
         var plans = await mediator.Send(new ListPlansQuery(), ct);
-        return Ok(plans.Select(p => new PlanResponse(p.Id, p.Code, p.Name, p.PriceCents, p.Currency)));
+        return Ok(plans.Select(p => new PlanResponse(
+            p.Id, p.Code, p.Name, p.PriceCents, p.Currency, p.Features, new PlanLimitsResponse(p.Limits.MaxDevices, p.Limits.HistoryDays))));
     }
 
     /// <summary>Get-or-create perezoso — nunca 404, todo usuario tiene siempre una membresía (FREE si nunca contrató nada).</summary>

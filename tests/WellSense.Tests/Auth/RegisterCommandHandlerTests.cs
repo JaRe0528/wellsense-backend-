@@ -28,7 +28,7 @@ public class RegisterCommandHandlerTests
         user.EmailVerified.Should().BeFalse();
         db.EmailVerificationTokens.Single().UserId.Should().Be(user.Id);
         result.UserId.Should().Be(user.Id);
-        await emailSender.Received(1).SendEmailVerificationAsync(user.Email, Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await emailSender.Received(1).SendEmailVerificationAsync(user.Email, Arg.Any<string?>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

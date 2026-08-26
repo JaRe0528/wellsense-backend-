@@ -38,6 +38,10 @@
     <!-- Bloque 6 (Memberships+Payments): SDK oficial de Stripe para .NET — ver
          StripePaymentGateway.cs para la justificación de por qué Stripe. -->
     <PackageReference Include="Stripe.net" Version="47.4.0" />
+    <!-- Correo real (post-Bloque-10): MailKit trae MimeKit como dependencia transitiva
+         (MimeMessage, MailboxAddress, BodyBuilder) — SDK correcto y actual para SMTP en
+         .NET, System.Net.Mail está deprecado desde hace años para este uso. -->
+    <PackageReference Include="MailKit" Version="4.8.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\WellSense.Application\WellSense.Application.csproj" />

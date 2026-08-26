@@ -12,11 +12,32 @@ public class DeviceConfiguration : IEntityTypeConfiguration<Device>
         b.ToTable("devices");
         b.HasKey(x => x.Id);
         b.HasOne<User>().WithMany().HasForeignKey(x => x.UserId);
-        b.Property(x => x.Type).HasConversion(
-            v => v == DeviceType.Phone ? "PHONE" : "WATCH",
-            v => v == "PHONE" ? DeviceType.Phone : DeviceType.Watch);
+        // Parte 5 (post-Bloque-10): se agregó WEB — no hay CHECK a nivel de BD que
+        // migrar (devices.type siempre fue `text` simple, migración 003, sin
+        // restricción de valores ahí); la restricción real vivía en este ternario
+        // binario (todo lo que no fuera "PHONE" caía silenciosamente en "WATCH", un bug
+        // latente que nunca se manifestó porque el validador ya solo dejaba pasar esos
+        // dos valores) y en RegisterDeviceCommandValidator. Se corrige el switch
+        // completo acá de una vez, mismo criterio que MeasurementType/DeviceCommandType.
+        b.Property(x => x.Type).HasConversion(v => TypeToDb(v), v => TypeFromDb(v));
         b.Property(x => x.Status).HasConversion(v => StatusToDb(v), v => StatusFromDb(v));
     }
+
+    private static string TypeToDb(DeviceType v) => v switch
+    {
+        DeviceType.Phone => "PHONE",
+        DeviceType.Watch => "WATCH",
+        DeviceType.Web => "WEB",
+        _ => throw new ArgumentOutOfRangeException(nameof(v))
+    };
+
+    private static DeviceType TypeFromDb(string v) => v switch
+    {
+        "PHONE" => DeviceType.Phone,
+        "WATCH" => DeviceType.Watch,
+        "WEB" => DeviceType.Web,
+        _ => throw new ArgumentOutOfRangeException(nameof(v))
+    };
 
     // Ver el mismo comentario en IdentityConfigurations.UserConfiguration: extraer el
     // switch a un método estático con tipo de retorno explícito evita CS8514 cuando se

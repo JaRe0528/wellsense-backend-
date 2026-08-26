@@ -64,4 +64,28 @@ public class NotificationsFlowEndpointTests(CustomWebApplicationFactory factory)
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    [Fact]
+    public async Task A_web_device_registers_and_receives_a_notification_token_exactly_like_phone_or_watch()
+    {
+        // Parte 5 del encargo: confirmar explícitamente que WEB funciona igual de bien
+        // que PHONE/WATCH en ambos endpoints, sin lógica nueva — solo el tipo permitido.
+        var client = factory.CreateClient();
+        var email = $"user-{Guid.NewGuid():N}@example.com";
+        await client.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest(email, Password));
+        var token = factory.CapturedEmails.VerificationTokens[email];
+        await client.PostAsJsonAsync("/api/v1/auth/verify-email", new VerifyEmailRequest(token));
+        var loginResponse = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(email, Password));
+        var tokens = await loginResponse.Content.ReadFromJsonAsync<AuthTokensResponse>();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", tokens!.AccessToken);
+
+        var deviceResponse = await client.PostAsJsonAsync("/api/v1/devices", new RegisterDeviceRequest("WEB", "Chrome 128", null, null));
+        deviceResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+        var device = await deviceResponse.Content.ReadFromJsonAsync<RegisterDeviceResponse>();
+
+        var tokenResponse = await client.PostAsJsonAsync("/api/v1/notifications/tokens",
+            new RegisterNotificationTokenRequest(device!.Id, "web-push-token-abc"));
+
+        tokenResponse.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
 }

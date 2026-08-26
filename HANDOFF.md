@@ -1,317 +1,279 @@
-# HANDOFF.md — Chat Backend (.NET), Bloque 10: Auditoría completa + hardening de código
+# HANDOFF.md — Chat Backend (.NET), post-Bloque-10: fix urgente + correo real + límites de plan + WEB + upgrade
 
-> Entregable del **Bloque 10**, el último de los 10. Requiere Bloque 9
-> cerrado (ver `HANDOFF-Bloque9.md`, entregado en el mismo envío — ambos
-> bloques se hicieron uno tras otro sin esperar luz verde entre ellos, tal
-> como indicaste). Cierra el segundo de los dos huecos reales del
-> planteamiento original: auditoría incompleta y ningún hardening de
-> headers/CORS explícito.
-
----
-
-## Actualización 2 — 195/196 → causa raíz real de CORS encontrada (no otra corrección a ciegas)
-
-Segunda corrida real: 195/196, y las 3 fallas de aislamiento de pruebas
-quedaron confirmadas resueltas. Solo CORS seguía fallando — mi cambio
-anterior (array → string separado por comas) no atacaba la causa real,
-solo eliminaba una fuente de ambigüedad que no era el problema.
-
-**Causa raíz real, esta vez con evidencia, no una sospecha más**: leía
-`Cors:AllowedOrigins` de forma EAGER, en una variable de nivel superior de
-`Program.cs`, ANTES de `builder.Build()`. Pero yo mismo ya sabía de este
-patrón exacto de bug — mi propio comentario en `Program.cs`, ya desde el
-Bloque 2, dice explícitamente que `Jwt:Secret` debe leerse DENTRO del
-callback de `AddJwtBearer`, nunca en una variable calculada antes, porque
-las fuentes de configuración que `WebApplicationFactory.ConfigureAppConfiguration`
-agrega en las pruebas de integración no están garantizadas de estar ya
-fusionadas en `builder.Configuration` cuando el código de nivel superior
-de `Program.cs` se ejecuta de forma síncrona antes de `Build()`. Apliqué
-esa lección a JWT pero se me pasó aplicarla a CORS — literalmente el mismo
-tipo de bug, dos veces, en el mismo archivo.
-
-**Fix real**: `Cors:AllowedOrigins` ahora se lee DENTRO del callback de
-`AddCors(options => {...})` — ese callback se registra vía
-`services.Configure<CorsOptions>(...)` y solo se EVALÚA la primera vez que
-se resuelve `IOptions<CorsOptions>` (la primera request real), momento en
-el que toda la configuración de prueba ya está fusionada. Mismo patrón,
-mismo archivo, ahora aplicado consistentemente en los dos lugares que lo
-necesitaban.
+> Seis partes en un solo envío, en el orden de prioridad pedido. Requiere
+> Bloque 10 cerrado (196/196 confirmado). Migraciones nuevas: 016
+> (urgente), 017 (límites/features), 018 (device WEB) — las tres validadas
+> de punta a punta contra Postgres real, cada una con su ciclo completo
+> arriba/abajo/arriba, no solo el `CREATE`/`ALTER`.
 
 ---
 
-## Actualización 1 — 192/196 → corrección de 4 fallas reales tras `dotnet build && dotnet test`
-
-Corriste el primer `dotnet test` real de estos dos bloques: 192/196 pasaron,
-4 fallaron. Diagnóstico de las 4, y por qué NO significan lo mismo entre sí:
-
-**3 de las 4 eran un bug en mis propias pruebas, no en la app.**
-`BootstrapFirstAdminCommandHandler` verifica, a propósito, si existe
-CUALQUIER admin en TODO el sistema — es el punto central de su diseño de
-seguridad (autodeshabilitarse para siempre tras el primer uso). Pero
-`AdminFlowEndpointTests` tenía 4 pruebas que cada una asumía ser "la
-primera" contra la MISMA base de datos InMemory compartida por
-`IClassFixture<CustomWebApplicationFactory>`. Solo la que xUnit ejecutó
-primero consiguió de verdad el 204; las otras tres, correctamente según el
-propio diseño de la app, recibieron 409 `ALREADY_BOOTSTRAPPED` — y una de
-ellas, al no tener en realidad un token de admin válido, se cayó más
-adelante con un error de deserialización JSON al intentar leer una
-respuesta de error como si fuera un `RefreshResponse` exitoso. La app
-funcionó exactamente como debía; el aislamiento de mis pruebas estaba mal.
-Corregido: las 4 pruebas que necesitan "todavía no existe ningún admin"
-ahora crean y descartan su propia `CustomWebApplicationFactory` aislada en
-vez de compartir la inyectada por la clase — las que no bootstrapean
-(403/401 puros) siguen usando la compartida, más barata.
-
-**La cuarta (CORS) era una decisión de diseño insuficientemente robusta de
-mi parte, no una certeza rota.** Configuré `Cors:AllowedOrigins` como un
-array, y en las pruebas lo poblaba vía una clave indexada
-(`Cors:AllowedOrigins:0`) agregada por un proveedor de configuración
-distinto al de `appsettings.json` (que ya declaraba ese mismo array, vacío).
-No tenía certeza plena de que el binding de un array por claves indexadas
-se fusionara de forma predecible entre dos proveedores de configuración
-distintos — lo dije explícitamente como una posible causa en mi propio
-razonamiento antes de que corrieras las pruebas. En vez de seguir
-adivinando, cambié `Cors:AllowedOrigins` de array a un STRING plano
-separado por comas (`"https://a.com,https://b.com"`) — elimina la
-ambigüedad de binding por completo (un solo valor, nunca una fusión de
-claves indexadas de dos fuentes), y de paso es más práctico para
-Render.com/variables de entorno planas, que es hacia donde me comentaste
-que van a desplegar: un array anidado por env vars obliga a la convención
-`Cors__AllowedOrigins__0`, que la mayoría de las plataformas PaaS no
-manejan bien, mientras que una sola variable separada por comas es
-trivial ahí.
-
-Ambos tipos de fix — aislamiento de pruebas y la simplificación de CORS —
-ya están en el ZIP adjunto. Quedo a la espera de que confirmes
-`dotnet test` en 196/196.
-
----
-
-## 0. Aviso operativo (se mantiene)
+## 0. Aviso operativo
 
 Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude
-correr `dotnet build`/`dotnet test` aquí. Lo que sí hice en este bloque:
+correr `dotnet build`/`dotnet test` aquí. Lo que sí hice:
 
-- **Hice un inventario real antes de asumir nada**: `grep` de todos los
-  `AuditLogs.Add` existentes en el código, en vez de confiar en mi memoria
-  de qué ya estaba cubierto. Esto encontró una discrepancia real con tu
-  encargo — ver §1, corregida explícitamente en vez de duplicar trabajo o
-  ignorarla en silencio.
-- **Encontré y corregí un bug real en mi propio primer intento** de agregar
-  auditoría a `GenerateDeviceLinkCodeCommandHandler`: ese handler ya tenía
-  un bucle de reintento por colisión (Bloque 2) que desprende del change
-  tracker las entidades del intento fallido antes de reintentar — mi primer
-  borrador agregaba el registro de auditoría sin desprenderlo también, lo
-  que habría duplicado filas de `audit_logs` en cualquier reintento real.
-  Lo corregí antes de escribir la prueba, y esa misma prueba
-  (`Successful_generation_writes_exactly_one_audit_log_entry_even_after_a_retry`)
-  ejercita exactamente ese camino.
-- **Validé contra Postgres real** las 3 formas exactas de metadata `jsonb`
-  que este bloque ahora escribe (vacía, con motivo de fallo, con detalle de
-  suscripción) — confirmado que las tres se insertan sin error.
-- Los 3 barridos automatizados de siempre, limpios sobre todo lo tocado en
-  este bloque.
-
----
-
-## 1. Corrección a tu encargo: dos acciones ya estaban auditadas
-
-Antes de escribir código, hice `grep -rn "AuditLogs.Add"` sobre todo el
-código para saber qué faltaba de verdad, en vez de asumir. Resultado:
-**`cambio de contraseña` y `reset de contraseña` ya se registraban desde el
-Bloque 2** (`ChangePasswordCommandHandler` → `"password_changed"`;
-`ResetPasswordCommandHandler` → `"password_reset"`), junto con
-`refresh_token_reuse_detected` (Bloque 2) y `account_deleted` (Bloque 3).
-
-Tu lista los incluía como pendientes — no lo son. No los toqué de nuevo
-(hubiera sido registrar la misma acción dos veces, o peor, reemplazar un
-`Action` ya usado en producción hipotética por otro nombre y romper
-continuidad del historial). Lo señalo explícitamente para que tu propio
-registro de qué está cubierto quede correcto, no para restar mérito al
-encargo — el resto de la lista sí eran huecos reales, cubiertos abajo.
+- Las 3 migraciones nuevas, validadas con el mismo rigor de siempre
+  (aplicar → confirmar el efecto real con un `INSERT`/`UPDATE` que
+  reproduce exactamente el caso que importa → revertir → confirmar que
+  revierte → volver a aplicar).
+- **Reproduje tu error de producción carácter por carácter** antes de
+  tocar nada (Parte 1) — no asumí la causa, la confirmé con un `PREPARE`/
+  `EXECUTE` que dispara el mismo `42804` que Render reportó.
+- **Escribí, pero no pude correr yo mismo**, la primera prueba de este
+  proyecto contra Postgres real vía Testcontainers (mi sandbox no tiene
+  Docker) — marcada explícitamente como pendiente de que ustedes la
+  confirmen, a diferencia de todo lo demás que sí validé con psql
+  directamente.
+- **Encontré y corregí dos errores reales en mi propio trabajo de este
+  mismo turno**, antes de que llegaran a ningún lado — ver §5.1 (dónde
+  vivía de verdad el `CHECK` de `devices.type`) y §5.2 (el bug de tipo
+  silencioso que ya estaba en el código, no algo que yo introduje, pero
+  que encontré al tocar esa zona).
+- Las credenciales SMTP reales que mandaste **no se escribieron en
+  ningún archivo** de este entregable — ni en código, ni en
+  `appsettings.json`, ni en este HANDOFF. Solo los nombres de las claves
+  de configuración.
+- Los 3 barridos automatizados de siempre, limpios sobre todo lo tocado.
 
 ---
 
-## 2. Qué quedó auditado — inventario completo tras este bloque
+## 1. PARTE 1 — Bug urgente: login roto en producción (RESUELTO)
 
-| Acción | Handler | Bloque que lo escribió |
+**Causa confirmada** (la tuya, verificada por mi cuenta): `audit_logs.ip_address`
+se creó como `inet` nativo desde la migración 002/Bloque 1— la tabla
+`audit_logs` en sí vive en la migración 002, confirmé el DDL exacto antes
+de escribir nada. `AuditLog.IpAddress` (C#) siempre fue un `string` plano
+sin `HasConversion` en `AuditLogConfiguration`. Nunca falló hasta que el
+Bloque 10 activó la auditoría real (login, etc.), momento en el que
+Npgsql empezó a mandar un parámetro `text` contra una columna `inet`.
+
+Reproduje el error EXACTO antes de escribir la migración:
+```
+PREPARE ins(...) AS INSERT INTO audit_logs(...) VALUES (...);
+EXECUTE ins(...);
+→ ERROR:  column "ip_address" is of type inet but expression is of type text
+```
+Carácter por carácter el mismo mensaje que reportó Render.
+
+**Fix — migración 016**: `ALTER TABLE audit_logs ALTER COLUMN ip_address TYPE text;`
+No se tocó el modelo C# — `AuditLog.IpAddress` sigue siendo `string?`,
+tal como pediste. Validado: aplicar → el mismo `INSERT` que antes fallaba
+ahora funciona → revertir → vuelve a fallar (confirma que la reversión es
+real, no un placebo) → re-aplicar.
+
+**Regresión escrita para que esto no vuelva a pasar en silencio**: hice un
+inventario honesto de por qué 196/196 pruebas en verde no atraparon esto
+— **todas** las casi 200 pruebas de integración de este proyecto usan el
+proveedor InMemory de EF Core, que no aplica tipos nativos de Postgres en
+absoluto. `Testcontainers.PostgreSql` estaba referenciado desde el
+Bloque 1 con la intención explícita de agregar pruebas contra Postgres
+real "cuando hubiera lógica de negocio que probar" — nunca se hizo, en
+ningún bloque. Escribí `AuditLogRealPostgresTests` (la primera prueba de
+este proyecto que corre contra un contenedor Postgres real, aplicando las
+16 migraciones reales) para cerrar ese hueco — **pero mi entorno no tiene
+Docker, así que no pude correrla yo mismo**. Necesito que la corran
+ustedes (`dotnet test`, con Docker disponible) para confirmarla; el fix en
+sí (la migración) SÍ está validado por mi cuenta.
+
+---
+
+## 2. PARTE 2 — Correo real por SMTP (MailKit) con diseño de marca
+
+- `SmtpEmailSender` (MailKit, STARTTLS puerto 587) reemplaza a
+  `LoggingEmailSender` como implementación real de `IEmailSender` — mismo
+  patrón que Firebase/Stripe: si `Smtp:Host` no está configurado, cae a
+  `LoggingEmailSender` (nunca lanza, nunca rompe el arranque). Un fallo
+  real de envío (credenciales rechazadas, host inalcanzable) tampoco se
+  propaga — un correo que no se pudo mandar nunca debe convertir un
+  registro exitoso en un 500 para el usuario.
+- **Credenciales**: viven SOLO en `Smtp:Host`/`Port`/`Username`/`Password`/
+  `FromAddress`/`FromName` y `Frontend:BaseUrl`, todas vacías en
+  `appsettings.json` (mismo patrón que `Jwt:Secret`) — configúrenlas en
+  Render como variables de entorno `Smtp__Host`, `Smtp__Username`, etc.
+  (doble guion bajo = separador de sección en variables de entorno .NET).
+- **Links reales**: `{Frontend:BaseUrl}/verificar-correo?token={token}` y
+  `{Frontend:BaseUrl}/restablecer-contrasena?token={token}` — el dominio
+  nunca está hardcodeado, viene de configuración.
+- **`IEmailSender` cambió de forma** (se agregó `recipientName`) — ambos
+  handlers que lo llaman se actualizaron: `RegisterCommandHandler` manda
+  `null` (todavía no existe Profile en ese punto del flujo);
+  `ForgotPasswordCommandHandler` ahora consulta `Profiles` y arma
+  `"{FirstName} {LastName}".Trim()`, cayendo a `null` (que
+  `SmtpEmailSender` resuelve a mostrar el email) si no hay nombre.
+- **Plantillas HTML** (`EmailTemplates.cs`, Infrastructure): funciones
+  puras, mismo criterio que `DailyScoringRules` — se puede probar el HTML
+  exacto sin SMTP de por medio. Tablas + estilos inline (nunca `<style>`
+  externo ni flexbox/grid — la mayoría de los clientes de correo no los
+  soportan bien), Arial/Helvetica. Los 3 colores (`#F3F5F1` Paper,
+  `#1B4B43` Pine, `#E64B3C` Pulse) y la estructura exacta que pediste
+  (header sólido con tagline, tarjeta blanca con eyebrow/título/párrafo/
+  botón/link plano/franja de vencimiento, footer fuera de la tarjeta).
+  El nombre de saludo se escapa con `HtmlEncode` — nunca se interpola
+  HTML crudo de un valor que el usuario controla (el nombre de su
+  Profile).
+- **Expiración real, no inventada**: el correo de verificación dice "vence
+  en 24 horas" porque `RegisterCommandHandler` de verdad pone
+  `ExpiresAt = clock.UtcNow.AddHours(24)`; el de reset dice "vence en 1
+  hora" porque `ForgotPasswordCommandHandler` de verdad usa
+  `AddHours(1)` — el texto del correo refleja el dato real, no un número
+  aparte que pudiera desincronizarse.
+
+---
+
+## 3. PARTE 3 — Límites reales por plan (migración 017)
+
+Valores elegidos (documentados como criterio propio, ajustables sin tocar
+código — viven en datos):
+
+| Plan | maxDevices | historyDays |
 |---|---|---|
-| `refresh_token_reuse_detected` | `RefreshTokenCommandHandler` | 2 (ya existía) |
-| `password_changed` | `ChangePasswordCommandHandler` | 2 (ya existía) |
-| `password_reset` | `ResetPasswordCommandHandler` | 2 (ya existía) |
-| `account_deleted` | `DeleteMeCommandHandler` | 3 (ya existía) |
-| **`login_succeeded`** | `LoginCommandHandler` | **10 (nuevo)** |
-| **`login_failed`** | `LoginCommandHandler` | **10 (nuevo)** |
-| **`device_link_code_generated`** | `GenerateDeviceLinkCodeCommandHandler` | **10 (nuevo)** |
-| **`device_link_code_redeemed`** | `RedeemDeviceLinkCodeCommandHandler` | **10 (nuevo)** |
-| **`device_registered`** | `RegisterDeviceCommandHandler` | **10 (nuevo)** |
-| **`device_unpaired`** | `UnpairDeviceCommandHandler` | **10 (nuevo)** |
-| **`subscription_changed`** | `SubscribeToPlanCommandHandler` | **10 (nuevo)** |
+| FREE | 1 | 7 |
+| BASIC | 2 | 30 |
+| PRO | 5 | 90 |
+| PROFESSIONAL | `null` (ilimitado) | `null` (ilimitado) |
 
-Decisiones puntuales:
+`membership_plans.limits` (jsonb) — `null` en un campo es el valor REAL
+sembrado para "sin límite", no un sentinel como `-1`. `PlanLimits.Parse`
+(Application, función pura) nunca lanza — un `limits` vacío o malformado
+cae a "sin límite" (fail-open, nunca bloquea a alguien por un dato
+corrupto). `PlanLimitsResolver.ResolveForUserAsync` (extension method
+compartido) resuelve el plan efectivo del usuario: su suscripción activa,
+o FREE si nunca tuvo ninguna (mismo criterio que `GetMyMembershipQueryHandler`)
+— **sin crear la fila de suscripción perezosamente**, porque un chequeo
+de límite es una lectura, no debería tener el efecto secundario de
+"afiliar" a alguien a FREE.
 
-- **`login_failed` distingue el motivo** (`invalid_credentials`,
-  `account_not_active`, `email_not_verified`) en `metadata.reason`, pero
-  usa el mismo `Action` para los tres — el detalle vive en la metadata, no
-  en el nombre de la acción, para que filtrar por `action=login_failed` en
-  el panel (Bloque 9) capture los tres casos de una vez.
-- **Un intento de login con un email que no existe se audita con
-  `UserId = null`** — no hay a quién atribuirlo, y no se debe revelar en
-  el registro (ni siquiera indirectamente, vía qué usuario quedó
-  vinculado) si ese email está o no registrado. Mismo principio que ya
-  regía la respuesta HTTP desde Bloque 2 (`AuthDomainException.InvalidCredentials()`
-  es el mismo error tanto si el email no existe como si la contraseña es
-  incorrecta).
-- **Un intento DECLINADO de suscripción NO se audita en `audit_logs`** —
-  ya queda registrado en `payments` con `status = DECLINED`, duplicarlo en
-  `audit_logs` no agrega información, solo ruido. Solo `subscription_changed`
-  se audita cuando el cambio de verdad se confirma (plan pago aprobado o
-  plan FREE, incluido "cancelar", que internamente llama al mismo
-  handler).
-- **`device_link_code_generated` sobrevive el bucle de reintento por
-  colisión sin duplicarse** — ver §0, el bug que atrapé en mi propio
-  borrador.
+**`POST /devices`**: cuenta dispositivos con `Status != Unpaired` contra
+`maxDevices` — desvincular uno libera el cupo (probado explícitamente).
+403 `PLAN_LIMIT_EXCEEDED` si se excede.
+
+**`GET /wellness/me/history`**: `Days` se recorta al `historyDays` del
+plan — nunca error, solo un resultado más chico. Probado en ambas
+direcciones: pedir más de lo permitido se recorta; pedir MENOS de lo
+permitido nunca se "regala" de más.
 
 ---
 
-## 3. CORS — whitelist explícita, nunca wildcard
+## 4. PARTE 4 — Features honestos, no inventados
 
-`Cors:AllowedOrigins` (`appsettings.json`, array de strings) — un array
-vacío significa **cero orígenes permitidos**, no "todo permitido": falla
-cerrado, no abierto. `AllowCredentials()` está activo porque el dashboard
-Web necesita mandar el header `Authorization` en llamadas cross-origin.
+`membership_plans.features` (antes `'{}'` vacío para los 4 planes desde
+Bloque 1) ahora es un arreglo real de strings, expuesto en
+`GET /memberships/plans` junto a `limits` — misma fuente de verdad que la
+Parte 3, no una copia separada.
 
-Probado contra el pipeline HTTP real, no solo configurado: un origen en la
-whitelist recibe `Access-Control-Allow-Origin` de vuelta; uno que no está
-en la whitelist, no lo recibe — confirmado con dos pruebas de integración
-distintas, no solo una prueba "positiva".
-
-**DevSecOps/Web deben poblar `Cors:AllowedOrigins` por ambiente antes de
-que cualquier cliente Web funcione contra un despliegue real** — hoy el
-array está vacío en `appsettings.json` (comentario explícito ahí mismo).
-Android/el reloj no pasan por CORS (no son navegadores), así que esto solo
-afecta al dashboard Web y a un futuro panel admin Web.
+**Decisión deliberada**: los features SOLO reflejan lo que Parte 3
+realmente aplica (cantidad de dispositivos, días de historial) — **no
+inventé diferenciadores que no existen**, como "soporte prioritario" o
+"comandos en tiempo real" (el Device Command System del Bloque 8 no tiene
+ningún gating por plan hoy — cualquier usuario, de cualquier plan, ya
+puede emitir comandos; listarlo como feature de un plan superior sería
+publicidad falsa). Si en el futuro se gatea algo más por plan, ese es el
+momento de agregarlo a `features` — no antes.
 
 ---
 
-## 4. Headers de seguridad
+## 5. PARTE 5 — Dispositivos WEB
 
-`SecurityHeadersMiddleware` fija tres headers en **toda** respuesta,
-incluidas las de error (probado explícitamente: un 401 generado por el
-middleware de autenticación, antes de llegar a ningún controller, también
-los lleva — usa `Response.OnStarting(...)`, que se dispara sin importar
-qué parte del pipeline termina escribiendo la respuesta):
+### 5.1 Corrección a mi propio primer intento
 
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `Referrer-Policy: strict-origin-when-cross-origin`
+Mi primer paso fue buscar el `CHECK` de `devices.type` en la migración
+003 — no encontré ninguno ahí (esa migración es de `profiles`/`goals`) y
+casi concluí "no hace falta migración, el tipo es libre". Antes de dar
+eso por bueno, lo verifiqué contra Postgres real con un `INSERT` — **sí
+existe** un `CHECK (type IN ('PHONE','WATCH'))`, solo que vive en la
+migración 004 (donde se crea la tabla `devices` en sí), no en la 003.
+Corregido antes de escribir la migración equivocada — 018 sí es
+necesaria, y su comentario documenta explícitamente dónde vive el
+`CHECK` real para que este error no se repita.
 
-**CSP y HSTS quedan deliberadamente fuera**, tal como pediste — ambos
-dependen de que haya HTTPS real en producción (HSTS le dice al navegador
-"solo háblame por HTTPS"; CSP necesita declarar orígenes de scripts/estilos
-que este backend, al no servir ninguna página HTML, no puede anticipar sin
-coordinarse con Web). Responsabilidad de DevSecOps cuando el despliegue
-real tenga TLS terminado.
+### 5.2 Bug de tipo silencioso, encontrado al tocar esta zona
 
----
+Al agregar `DeviceType.Web`, encontré que tanto la conversión de EF
+(`v == DeviceType.Phone ? "PHONE" : "WATCH"`) como el parseo en
+`RegisterDeviceCommandHandler` (`request.Type == "WATCH" ? ... : ...Phone`)
+eran ternarios binarios — **cualquier valor que no fuera exactamente
+"PHONE"/"WATCH" caía silenciosamente en el otro**, sin error. Nunca se
+manifestó porque el validador ya solo dejaba pasar esos dos valores, pero
+en cuanto WEB llegara sin este fix, se habría guardado como WATCH sin que
+nadie se enterara. Corregido con un switch completo en ambos lugares,
+mismo patrón que `MeasurementType`/`DeviceCommandType`.
 
-## 5. Endpoint nuevo: `GET /api/v1/admin/audit-logs`
+### 5.3 Lo que quedó
 
-Para que el panel de Admin (Bloque 9) pueda mostrar lo que este bloque
-terminó de poblar. Mismo patrón de paginación que el resto de Admin
-(`page`, `pageSize`, filtros opcionales `userId`/`action`), mismo
-`[RequireRole("Admin")]` — un usuario normal recibe 403, probado
-explícitamente igual que los otros 5 endpoints administrativos.
-
----
-
-## 6. Modificaciones a código ya aprobado — todas flagueadas
-
-Cinco handlers de bloques ya cerrados se modificaron para agregar el
-registro de auditoría — **ninguno cambió su firma de constructor ni su
-lógica de negocio existente**, solo se agregó la llamada a
-`db.AuditLogs.Add(...)` en el punto correcto de cada uno:
-
-- `LoginCommandHandler` (Bloque 2)
-- `GenerateDeviceLinkCodeCommandHandler` (Bloque 2)
-- `RedeemDeviceLinkCodeCommandHandler` (Bloque 2)
-- `RegisterDeviceCommandHandler` (Bloque 4)
-- `UnpairDeviceCommandHandler` (Bloque 4)
-- `SubscribeToPlanCommandHandler` (Bloque 6)
-
-Confirmé contra las pruebas ya existentes de cada uno que ninguna
-aserción se rompe (ninguna de esas pruebas verificaba el contenido
-completo de `db.AuditLogs`, así que agregar filas nuevas no las
-invalida) — y agregué una prueba nueva por handler para el
-comportamiento de auditoría específico.
+- Migración 018: `devices_type_check` ahora acepta `'WEB'` — validado
+  antes/después/revertido/reaplicado contra Postgres real.
+- `POST /devices` y `POST /notifications/tokens` confirmados funcionando
+  igual para WEB que para PHONE/WATCH — prueba de integración HTTP real
+  end-to-end, no solo razonado.
+- **VAPID / Web Push**: no hace falta que yo exponga ninguna clave
+  pública nueva. `notification_tokens.fcm_token` (Bloque 5) ya es un
+  string genérico — el Web Push SDK de Firebase (`firebase-messaging`
+  en el navegador) genera su propio token FCM usando la
+  `VAPID_PUBLIC_KEY` del proyecto de Firebase de Web, que se configura
+  del lado del **Chat Web** directamente en su configuración de Firebase
+  (no es un secreto que el backend deba generar o guardar — es pública
+  por diseño, vive en el bundle del cliente Web). El backend no necesita
+  saber nada de VAPID: solo recibe el token FCM resultante y lo guarda
+  igual que para Android, `FirebaseCloudMessagingSender` ya envía a
+  cualquier token FCM sin importar de qué plataforma vino. **Pásenle
+  esto al Chat Web tal cual**: configuren su propio proyecto de Firebase
+  para Web, obtengan su VAPID key desde la consola de Firebase, y manden
+  el token resultante a `POST /notifications/tokens` — cero cambios
+  adicionales de nuestro lado.
 
 ---
 
-## 7. Qué pruebas existen (Bloque 10)
+## 6. PARTE 6 — Upgrade de plan pagado a uno mayor (confirmado, sin bugs)
 
-Unitarias con EF InMemory — una por cada handler modificado, más:
-- `Admin/ListAuditLogsQueryHandlerTests`: filtro por usuario (resuelve el
-  email), filtro por acción, entradas sin `UserId` no rompen la resolución
-  de email.
-- `LoginCommandHandlerTests` (extendida): login exitoso registra IP;
-  login fallido con contraseña incorrecta se atribuye al usuario real;
-  login fallido con email inexistente se registra con `UserId = null`.
-- `GenerateDeviceLinkCodeCommandHandlerTests` (extendida): **exactamente
-  un** registro de auditoría incluso tras un reintento por colisión.
-- `RedeemDeviceLinkCodeCommandHandlerTests`, `DevicesTests`,
-  `SubscribeToPlanCommandHandlerTests` (extendidas): un registro por
-  acción exitosa; el intento de pago declinado NO genera uno.
-
-Integración HTTP end-to-end:
-- `Integration/SecurityHardeningEndpointTests`: los 3 headers presentes en
-  cualquier respuesta, incluida una de error; CORS deja pasar el origen
-  permitido y no revela nada al no permitido — las 4 pruebas contra el
-  pipeline real, no contra la configuración en aislamiento.
-- `Integration/AdminFlowEndpointTests` (extendida): un login real de un
-  usuario normal aparece en `/admin/audit-logs` cuando un admin lo
-  consulta; un usuario normal recibe 403 en ese mismo endpoint.
+`Upgrading_from_an_active_paid_plan_to_a_higher_one_replaces_it_cleanly_over_http`
+(BASIC activo → PRO con tarjeta aprobada) — el mecanismo de "reemplazo en
+dos pasos" que ya se había construido y probado en Bloque 6 para
+FREE→pagado y pagado→cancelar **funcionó correctamente también para
+pagado→pagado sin necesitar ningún cambio**: confirmé que
+`SubscribeToPlanCommandHandler` no distingue el caso "reemplazar una
+suscripción pagada" del caso "reemplazar la FREE lazy" — es la misma
+lógica de siempre (Paso 1: desactivar la anterior sola; Paso 2: crear la
+nueva + su pago, juntos). La prueba confirma las 3 cosas pedidas
+explícitamente: no quedan 2 suscripciones activas, el pago nuevo se
+registra correcto (y el de BASIC sigue en el historial, ahora asociado a
+una suscripción ya cancelada), y `GET /memberships/me` refleja PRO de
+inmediato.
 
 ---
 
-## 8. Riesgos abiertos
+## 7. Riesgos abiertos
 
-1. **`Cors:AllowedOrigins` vacío por default** — el backend arranca
-   correctamente pero NINGÚN origen Web funcionará hasta que DevSecOps lo
-   configure por ambiente. Es la decisión correcta (fallar cerrado), pero
-   hay que comunicarlo para que no parezca un bug el día del primer
-   despliegue con un dashboard Web real.
-2. **No hay purga/retención de `audit_logs`** — la tabla crece sin límite;
-   no se pidió una política de retención para este bloque y no se
-   inventó una. Candidato natural para un futuro trabajo de
-   mantenimiento/DevSecOps.
-3. **CSP/HSTS pendientes de DevSecOps**, tal como se decidió explícitamente
-   en el encargo — no es un olvido, es el alcance tal como se definió.
-4. Mismo aviso de siempre: no compilado/probado por mí en mi propio
-   entorno — necesito `dotnet build && dotnet test` de su lado antes de
-   aprobar.
+1. **`AuditLogRealPostgresTests` no la pude correr yo** — ver §1, necesito
+   que la confirmen con Docker disponible.
+2. **VAPID/Web Push depende de que el Chat Web configure su propio
+   proyecto de Firebase para Web** — el backend ya está listo (§5.3), no
+   hay nada más de este lado.
+3. **Los valores de límites de plan (Parte 3) son mi criterio, no una
+   cifra de negocio confirmada** — ajustables sin migración adicional
+   (son datos, un `UPDATE membership_plans SET limits = ...` alcanza).
+4. Mismo aviso de siempre para el resto del código: no compilado/probado
+   por mí en mi propio entorno — necesito `dotnet build && dotnet test`
+   de su lado antes de aprobar.
 
 ---
 
-## 9. Checklist de las 10 capas del DoD
+## 8. Checklist de las 10 capas del DoD
 
-- [x] Prueba unitaria de cada cambio de auditoría, incluyendo el bug de
-      duplicación que atrapé en mi propio borrador
-- [x] Prueba de integración HTTP end-to-end de CORS, headers de seguridad
-      y el endpoint nuevo de audit-logs — todas contra el pipeline real
-- [x] Documentación de API (Swagger, `[ProducesResponseType]`)
-- [x] Validación contra Postgres real de las 3 formas de metadata que este
-      bloque escribe
-- [x] Corrección explícita a una discrepancia real del encargo (§1), en
-      vez de duplicar trabajo o ignorarla
-- [x] Modificaciones a código ya aprobado, todas flagueadas con su
-      justificación y confirmadas contra las pruebas existentes
-- [ ] Compilación y `dotnet test` reales — **pendiente de tu lado**
+- [x] Bug urgente: causa reproducida antes de escribir el fix, no asumida
+- [x] Migraciones (016, 017, 018) validadas contra Postgres real de punta
+      a punta — antes/después/revertido/reaplicado, no solo el `ALTER`
+- [x] Dos errores propios encontrados y corregidos antes de compilar
+      (dónde vivía el CHECK de devices.type; el bug de tipo silencioso)
+- [x] Credenciales reales nunca escritas en ningún archivo entregado
+- [x] Prueba unitaria de cada pieza nueva (plantillas de correo,
+      PlanLimits, límites de dispositivos/historial, tipo WEB)
+- [x] Prueba de integración HTTP end-to-end para WEB y para el caso de
+      upgrade de Parte 6
+- [x] Primera prueba del proyecto contra Postgres real (Testcontainers) —
+      escrita, marcada honestamente como no verificada por mi cuenta
+- [ ] Compilación y `dotnet test` reales — **pendiente de su lado**
 
----
-
-## Cierre de los 10 bloques
-
-Con Bloque 9 (panel de administración + RBAC) y Bloque 10 (auditoría
-completa + hardening) el Backend queda funcionalmente completo según el
-plan original de 10 bloques. Quedo a la espera de tu resultado de
-compilación/pruebas antes de dar esto por cerrado del todo.
+Todo en el ZIP adjunto. Quedo a la espera de su resultado — el bug de
+producción es lo más urgente, avísenme apenas confirmen que el login
+vuelve a funcionar.

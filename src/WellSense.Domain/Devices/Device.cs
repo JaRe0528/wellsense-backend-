@@ -1,6 +1,6 @@
 namespace WellSense.Domain.Devices;
 
-public enum DeviceType { Phone, Watch }
+public enum DeviceType { Phone, Watch, Web }
 public enum DeviceStatus { Active, Inactive, Unpaired }
 
 public class Device

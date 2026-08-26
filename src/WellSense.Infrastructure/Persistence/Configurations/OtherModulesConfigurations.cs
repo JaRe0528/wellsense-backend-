@@ -208,6 +208,7 @@ public class MembershipPlanConfiguration : IEntityTypeConfiguration<MembershipPl
             v => v.ToString().ToUpperInvariant(),
             v => (PlanCode)Enum.Parse(typeof(PlanCode), v, true));
         b.Property(x => x.Features).HasColumnType("jsonb");
+        b.Property(x => x.Limits).HasColumnType("jsonb");
     }
 }
 

@@ -33,4 +33,12 @@ public class PaymentDomainException(string errorCode, string message, int httpSt
     /// </summary>
     public static PaymentDomainException GatewayNotConfigured()
         => new("PAYMENT_GATEWAY_NOT_CONFIGURED", "El sistema de pagos no está disponible en este momento.", 503);
+
+    /// <summary>
+    /// Parte 3 del encargo post-Bloque-10: límites reales por plan. 403, no 400 — no es
+    /// que la request esté mal formada, es que el plan actual del usuario no autoriza la
+    /// acción (mismo espíritu que un usuario normal contra un endpoint de Admin).
+    /// </summary>
+    public static PaymentDomainException PlanLimitExceeded(string limitName)
+        => new("PLAN_LIMIT_EXCEEDED", $"Tu plan actual no permite más de {limitName}. Mejora tu plan para continuar.", 403);
 }

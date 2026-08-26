@@ -37,7 +37,12 @@ public static class DependencyInjection
         services.AddScoped<IDeviceLinkCodeHasher, DeviceLinkCodeHasher>();
         services.AddSingleton<IDateTimeProvider, DateTimeProvider>();
         services.AddScoped<IUniqueConstraintViolationDetector, UniqueConstraintViolationDetector>();
-        services.AddScoped<IEmailSender, LoggingEmailSender>();
+        // Correo real (post-Bloque-10): SmtpEmailSender resuelve como IEmailSender;
+        // LoggingEmailSender queda registrado también como clase concreta (no como
+        // IEmailSender) para que SmtpEmailSender la use como fallback cuando
+        // Smtp:Host no está configurado.
+        services.AddScoped<LoggingEmailSender>();
+        services.AddScoped<IEmailSender, SmtpEmailSender>();
         services.AddScoped<IPushNotificationSender, FirebaseCloudMessagingSender>();
         services.AddScoped<IPaymentGateway, StripePaymentGateway>();
 

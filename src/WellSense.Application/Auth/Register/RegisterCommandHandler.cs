@@ -13,6 +13,9 @@ public class RegisterCommandHandler(
     IEmailSender emailSender,
     IDateTimeProvider clock) : IRequestHandler<RegisterCommand, RegisterResult>
 {
+    // Sin nombre para el saludo del correo — todavía no existe ningún Profile en este
+    // punto (se crea de forma perezosa más adelante, Bloque 3); SmtpEmailSender cae a
+    // usar el email como saludo cuando recibe null.
     public async Task<RegisterResult> Handle(RegisterCommand request, CancellationToken ct)
     {
         var normalizedEmail = request.Email.Trim().ToLowerInvariant();
@@ -50,7 +53,7 @@ public class RegisterCommandHandler(
 
         await db.SaveChangesAsync(ct);
 
-        await emailSender.SendEmailVerificationAsync(user.Email, rawToken, ct);
+        await emailSender.SendEmailVerificationAsync(user.Email, recipientName: null, rawToken, ct);
 
         return new RegisterResult(user.Id, user.Email);
     }

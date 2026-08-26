@@ -125,4 +125,42 @@ public class MembershipsFlowEndpointTests(CustomWebApplicationFactory factory)
         meResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         subscribeResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+
+    [Fact]
+    public async Task Upgrading_from_an_active_paid_plan_to_a_higher_one_replaces_it_cleanly_over_http()
+    {
+        // Parte 6 del encargo: el caso real que faltaba probar explícitamente —
+        // BASIC activo → PRO con tarjeta aprobada. A diferencia de FREE→pagado o
+        // pagado→cancelar (ya cubiertos), este cruza dos suscripciones PAGADAS reales.
+        var client = await RegisterVerifyAndLoginAsync();
+        factory.PaymentGateway.NextApproved = true;
+
+        var basicResponse = await client.PostAsJsonAsync("/api/v1/memberships/subscribe",
+            new SubscribeRequest("BASIC", "tok_visa", $"idem-{Guid.NewGuid()}"));
+        basicResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var basicResult = await basicResponse.Content.ReadFromJsonAsync<SubscribeResponse>();
+
+        var proResponse = await client.PostAsJsonAsync("/api/v1/memberships/subscribe",
+            new SubscribeRequest("PRO", "tok_visa", $"idem-{Guid.NewGuid()}"));
+        proResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var proResult = await proResponse.Content.ReadFromJsonAsync<SubscribeResponse>();
+
+        // No quedan 2 suscripciones activas a la vez — la de PRO es una fila nueva, no la misma que BASIC.
+        proResult!.SubscriptionId.Should().NotBe(basicResult!.SubscriptionId);
+        proResult.PlanCode.Should().Be("PRO");
+        proResult.Status.Should().Be("ACTIVE");
+
+        // GET /memberships/me refleja el plan nuevo inmediatamente, sin ningún paso intermedio.
+        var meResponse = await client.GetAsync("/api/v1/memberships/me");
+        var membership = await meResponse.Content.ReadFromJsonAsync<MembershipResponse>();
+        membership!.PlanCode.Should().Be("PRO");
+        membership.SubscriptionId.Should().Be(proResult.SubscriptionId);
+
+        // El pago nuevo (de PRO) quedó registrado como aprobado.
+        var paymentsResponse = await client.GetAsync("/api/v1/payments/me");
+        var payments = await paymentsResponse.Content.ReadFromJsonAsync<List<PaymentResponse>>();
+        payments.Should().HaveCount(2); // uno por cada suscripción pagada (BASIC, luego PRO)
+        payments.Should().Contain(p => p.PlanCode == "PRO" && p.Status == "APPROVED");
+        payments.Should().Contain(p => p.PlanCode == "BASIC" && p.Status == "APPROVED");
+    }
 }

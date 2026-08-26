@@ -8,7 +8,12 @@ namespace WellSense.Application.Auth.ForgotPassword;
 /// <summary>
 /// Siempre responde éxito (Unit), exista o no el email — nunca revelar por esta vía
 /// qué correos están registrados (enumeration attack). Si el usuario existe y está
-/// activo, se genera un token de un solo uso y se "envía" el correo.
+/// activo, se genera un token de un solo uso y se envía el correo.
+///
+/// Modificado (SMTP real, post-Bloque-10): se agregó una consulta a `Profiles` para
+/// construir el nombre del saludo del correo ("Hola, {nombre}.") — a diferencia del
+/// registro, un usuario que pide reset de contraseña normalmente YA tiene perfil. Si no
+/// lo tiene (o no puso nombre), se manda null y SmtpEmailSender cae a usar el email.
 /// </summary>
 public class ForgotPasswordCommandHandler(
     IWellSenseDbContext db,
@@ -34,9 +39,19 @@ public class ForgotPasswordCommandHandler(
                 ExpiresAt = clock.UtcNow.AddHours(1)
             });
             await db.SaveChangesAsync(ct);
-            await emailSender.SendPasswordResetAsync(user.Email, rawToken, ct);
+
+            var profile = await db.Profiles.FirstOrDefaultAsync(p => p.UserId == user.Id, ct);
+            var recipientName = BuildDisplayName(profile?.FirstName, profile?.LastName);
+
+            await emailSender.SendPasswordResetAsync(user.Email, recipientName, rawToken, ct);
         }
 
         return Unit.Value;
+    }
+
+    private static string? BuildDisplayName(string? firstName, string? lastName)
+    {
+        var name = $"{firstName} {lastName}".Trim();
+        return string.IsNullOrWhiteSpace(name) ? null : name;
     }
 }

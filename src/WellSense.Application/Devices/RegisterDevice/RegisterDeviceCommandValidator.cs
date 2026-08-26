@@ -8,8 +8,8 @@ public class RegisterDeviceCommandValidator : AbstractValidator<RegisterDeviceCo
     {
         RuleFor(x => x.Type)
             .NotEmpty()
-            .Must(t => t is "PHONE" or "WATCH")
-            .WithMessage("type debe ser 'PHONE' o 'WATCH'.");
+            .Must(t => t is "PHONE" or "WATCH" or "WEB")
+            .WithMessage("type debe ser 'PHONE', 'WATCH' o 'WEB'.");
         RuleFor(x => x.Model).MaximumLength(100);
         RuleFor(x => x.OsVersion).MaximumLength(50);
         RuleFor(x => x.AppVersion).MaximumLength(50);
