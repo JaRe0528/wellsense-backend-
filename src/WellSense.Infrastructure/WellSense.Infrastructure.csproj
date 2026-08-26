@@ -40,8 +40,13 @@
     <PackageReference Include="Stripe.net" Version="47.4.0" />
     <!-- Correo real (post-Bloque-10): MailKit trae MimeKit como dependencia transitiva
          (MimeMessage, MailboxAddress, BodyBuilder) — SDK correcto y actual para SMTP en
-         .NET, System.Net.Mail está deprecado desde hace años para este uso. -->
-    <PackageReference Include="MailKit" Version="4.8.0" />
+         .NET, System.Net.Mail está deprecado desde hace años para este uso.
+         4.16.0 (no 4.8.0): corrige GHSA-9j88-vvj5-vhgr, inyección de respuesta STARTTLS
+         que permite degradar el mecanismo SASL — nos afecta directamente, este mismo
+         archivo usa SecureSocketOptions.StartTls. Confirmado con búsqueda real, no
+         supuesto: el advisory nombra explícitamente 4.16.0 como la versión que lo
+         corrige. -->
+    <PackageReference Include="MailKit" Version="4.16.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\WellSense.Application\WellSense.Application.csproj" />

@@ -8,6 +8,48 @@
 
 ---
 
+## Actualización — 208/218 → 3 correcciones reales tras `dotnet build && dotnet test`
+
+Corriste la primera ronda real: 208/218, 10 fallas + 1 warning de
+seguridad. Diagnóstico completo — dos son bugs míos genuinos (uno con
+implicación de seguridad real más allá de esta corrida), uno es un
+warning que valía la pena resolver de verdad, no solo silenciar:
+
+**1) 9 fallas, un solo bug real (`PlanLimitsResolver`)**: la primera
+versión usaba `FirstAsync` para buscar el plan FREE cuando un usuario no
+tiene suscripción activa — `FirstAsync` LANZA si no hay ningún
+`MembershipPlan` sembrado. Rompió 9 pruebas ya existentes
+(`DevicesTests`/`GetMyDailyScoresAndHistoryTests`) que nunca tuvieron
+razón de sembrar `MembershipPlans` antes de este bloque. Más grave que
+las pruebas en sí: en un despliegue real, si el seed de planes faltara o
+una migración corriera fuera de orden, **cualquier usuario sin
+suscripción de pago habría recibido un 500** al registrar un dispositivo
+o ver su historial de bienestar — no un caso hipotético, una superficie
+real de fragilidad que introduje yo. Corregido a `FirstOrDefaultAsync` +
+`PlanLimits.Unlimited` como fallback — fail-open, exactamente el mismo
+criterio que `PlanLimits.Parse` ya aplicaba ante un jsonb malformado, que
+se me olvidó extender al resolver completo.
+
+**2) 1 falla, bug de la PRUEBA, no de la plantilla de correo**:
+`WebUtility.HtmlEncode` codifica correctamente "ñ" como `&#241;` — HTML
+válido y seguro, se renderiza perfecto en cualquier cliente de correo. Mi
+prueba comparaba contra el texto plano sin codificar, no contra lo que
+realmente se genera. Corregido decodificando el HTML antes de comparar en
+la prueba — la plantilla de producción nunca tuvo ningún bug, era
+puramente una aserción de prueba mal escrita de mi parte.
+
+**3) El warning `NU1902` (MailKit 4.8.0, vulnerabilidad moderada) — lo
+investigué en vez de ignorarlo**: es `GHSA-9j88-vvj5-vhgr`, inyección de
+respuesta STARTTLS que permite degradar el mecanismo de autenticación
+SASL — **nos afecta directamente**, `SmtpEmailSender` usa exactamente
+`SecureSocketOptions.StartTls`. Confirmé con una búsqueda real que la
+versión que lo corrige es la 4.16.0 (no adiviné un número) y actualicé el
+paquete.
+
+Las 3 correcciones ya están en el ZIP adjunto.
+
+---
+
 ## 0. Aviso operativo
 
 Sigo sin salida de red hacia NuGet en mi propio entorno de trabajo — no pude

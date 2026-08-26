@@ -23,11 +23,18 @@ public class EmailTemplatesTests
     public void Password_reset_email_uses_the_1h_expiry_text_and_its_own_copy()
     {
         var html = EmailTemplates.BuildPasswordReset("Ana Torres", "https://wellsense-web.vercel.app/restablecer-contrasena?token=xyz789");
+        // HtmlEncode (correctamente) convierte "ñ" en "&#241;" — válido y seguro en
+        // cualquier cliente de correo, pero significa que el texto plano en español no
+        // aparece literal en el HTML crudo. Se decodifica antes de comparar para poder
+        // escribir la aserción en español normal, en vez de escribir la entidad HTML a
+        // mano — el bug era de esta prueba (comparaba contra texto sin codificar),
+        // nunca de la plantilla en sí.
+        var decodedHtml = System.Net.WebUtility.HtmlDecode(html);
 
-        html.Should().Contain("Restablece tu contraseña");
-        html.Should().Contain("Restablecer contraseña");
-        html.Should().Contain("vence en 1 hora");
-        html.Should().NotContain("vence en 24 horas");
+        decodedHtml.Should().Contain("Restablece tu contraseña");
+        decodedHtml.Should().Contain("Restablecer contraseña");
+        decodedHtml.Should().Contain("vence en 1 hora");
+        decodedHtml.Should().NotContain("vence en 24 horas");
     }
 
     [Fact]
